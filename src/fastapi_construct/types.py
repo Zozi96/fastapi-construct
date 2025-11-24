@@ -1,9 +1,12 @@
-from typing import Any, TypedDict, Sequence, Callable
+from collections.abc import Callable, Sequence
 from enum import Enum
+from typing import Any, TypedDict
+
 from fastapi import Response, params
 from fastapi.routing import APIRoute
-from starlette.types import ASGIApp, Lifespan
 from starlette.routing import BaseRoute
+from starlette.types import ASGIApp, Lifespan
+
 
 type IncEx = set[int] | set[str] | dict[int, Any] | dict[str, Any] | None
 

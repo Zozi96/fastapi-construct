@@ -1,6 +1,9 @@
 import inspect
-from typing import Callable, Any
+from collections.abc import Callable
+from typing import Any
+
 from fastapi import Depends
+
 from .container import get_dependency_config
 from .enums import ServiceLifetime
 

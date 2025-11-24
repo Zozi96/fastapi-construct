@@ -1,4 +1,6 @@
-from typing import Callable, Unpack
+from collections.abc import Callable
+from typing import Unpack
+
 from .types import APIMethodArgs
 
 

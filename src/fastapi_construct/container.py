@@ -1,6 +1,7 @@
 import inspect
+from collections.abc import Callable
 from functools import lru_cache
-from typing import Any, Callable, Dict, Type, Optional
+from typing import Any
 
 from .enums import ServiceLifetime
 
@@ -11,10 +12,10 @@ class DependencyConfig:
         self.lifetime = lifetime
 
 
-_dependency_registry: Dict[Type[Any], DependencyConfig] = {}
+_dependency_registry: dict[type[Any], DependencyConfig] = {}
 
 
-def _create_singleton_wrapper(cls: Type[Any]) -> Callable:
+def _create_singleton_wrapper(cls: type[Any]) -> Callable:
     @lru_cache(maxsize=1)
     def singleton_factory(*args, **kwargs):
         return cls(*args, **kwargs)
@@ -27,7 +28,7 @@ def _create_singleton_wrapper(cls: Type[Any]) -> Callable:
 
 
 def register_dependency(
-    interface: Type[Any], provider: Callable, lifetime: ServiceLifetime = ServiceLifetime.SCOPED
+    interface: type[Any], provider: Callable, lifetime: ServiceLifetime = ServiceLifetime.SCOPED
 ) -> None:
     """
     Registers a dependency provider for a specific interface with a defined lifetime.
@@ -56,7 +57,7 @@ def register_dependency(
     _dependency_registry[interface] = DependencyConfig(final_provider, lifetime)
 
 
-def get_dependency_config(interface: Type[Any]) -> Optional[DependencyConfig]:
+def get_dependency_config(interface: type[Any]) -> DependencyConfig | None:
     """
     Retrieves the dependency configuration for a given interface.
 
@@ -70,7 +71,7 @@ def get_dependency_config(interface: Type[Any]) -> Optional[DependencyConfig]:
     return _dependency_registry.get(interface)
 
 
-def add_transient(interface: Type[Any], provider: Callable) -> None:
+def add_transient(interface: type[Any], provider: Callable) -> None:
     """
     Registers a transient dependency.
 
@@ -87,7 +88,7 @@ def add_transient(interface: Type[Any], provider: Callable) -> None:
     register_dependency(interface, provider, ServiceLifetime.TRANSIENT)
 
 
-def add_scoped(interface: Type[Any], provider: Callable) -> None:
+def add_scoped(interface: type[Any], provider: Callable) -> None:
     """
     Registers a dependency with a scoped lifetime.
 
@@ -100,7 +101,7 @@ def add_scoped(interface: Type[Any], provider: Callable) -> None:
     register_dependency(interface, provider, ServiceLifetime.SCOPED)
 
 
-def add_singleton(interface: Type[Any], provider: Callable) -> None:
+def add_singleton(interface: type[Any], provider: Callable) -> None:
     """
     Registers a singleton dependency.
 

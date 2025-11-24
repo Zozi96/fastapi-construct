@@ -1,15 +1,18 @@
-from typing import Type, TypeVar, Any, Unpack
+import inspect
+from typing import Any, TypeVar, Unpack
+
 from fastapi import APIRouter, Depends
-from .enums import ServiceLifetime
+
 from .container import register_dependency
+from .enums import ServiceLifetime
 from .reflection import autowire_callable
 from .types import APIRouterArgs
-import inspect
+
 
 T = TypeVar("T")
 
 
-def injectable(interface: Type[T], lifetime: ServiceLifetime = ServiceLifetime.SCOPED):
+def injectable[T](interface: type[T], lifetime: ServiceLifetime = ServiceLifetime.SCOPED):
     """
     Decorator to register a class as an injectable dependency.
 
@@ -27,7 +30,8 @@ def injectable(interface: Type[T], lifetime: ServiceLifetime = ServiceLifetime.S
         Callable[[Type[T]], Type[T]]: A decorator function that returns the original class
         after registering it.
     """
-    def decorator(cls: Type[T]) -> Type[T]:
+
+    def decorator(cls: type[T]) -> type[T]:
         """
         Registers a class as a dependency for the specified interface and autowires its constructor.
 
@@ -104,14 +108,15 @@ def controller(router: APIRouter | None = None, **kwargs: Unpack[APIRouterArgs])
                     def list(self): ...
                     # methods must be annotated with `_route_metadata` elsewhere
     """
-    def decorator(cls: Type[Any]) -> Type[Any]:
+
+    def decorator(cls: type[Any]) -> type[Any]:
         nonlocal router
         if router is None:
             router = APIRouter(**kwargs)
         else:
             if "prefix" in kwargs:
                 router.prefix += kwargs["prefix"]  # type: ignore
-            if "tags" in kwargs and kwargs["tags"]:
+            if kwargs.get("tags"):
                 router.tags.extend(kwargs["tags"])  # type: ignore
 
         cls.router = router  # type: ignore
@@ -130,10 +135,10 @@ def controller(router: APIRouter | None = None, **kwargs: Unpack[APIRouterArgs])
                 metadata = method._route_metadata  # type: ignore
 
                 async def endpoint_wrapper(
-                    _controller_instance: cls = Depends(get_instance),  # type: ignore
+                    _controller_instance: cls = Depends(get_instance),  # type: ignore  # noqa: B008
                     **endpoint_kwargs,
                 ):
-                    method_to_call = getattr(_controller_instance, name)
+                    method_to_call = getattr(_controller_instance, name)  # noqa: B023
                     if inspect.iscoroutinefunction(method_to_call):
                         return await method_to_call(**endpoint_kwargs)
                     return method_to_call(**endpoint_kwargs)
@@ -145,11 +150,11 @@ def controller(router: APIRouter | None = None, **kwargs: Unpack[APIRouterArgs])
                 params = list(sig.parameters.values())[1:]  # Skip self
 
                 endpoint_wrapper.__signature__ = sig.replace(
-                    parameters=params
-                    + [
+                    parameters=[
+                        *params,
                         inspect.Parameter(
                             "_controller_instance", inspect.Parameter.KEYWORD_ONLY, default=Depends(get_instance)
-                        )
+                        ),
                     ]
                 )
 

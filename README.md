@@ -1,37 +1,89 @@
 # FastAPI Construct
 
-FastAPI Construct is a lightweight library that brings NestJS / ASP.NET Core style architecture to FastAPI. It provides:
+[![Python Version](https://img.shields.io/badge/python-3.12%2B-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
 
-- Class-based controllers (clean route grouping with `@controller`).
-- Constructor dependency injection using Python type hints (no `Depends()` boilerplate in `__init__`).
-- Service lifecycles: `SCOPED` (per request), `TRANSIENT`, and `SINGLETON`.
+> A lightweight dependency injection library for FastAPI with NestJS/ASP.NET Core style architecture
 
-The goal is cleaner, more testable, and framework-agnostic code.
+FastAPI Construct brings the elegant patterns of NestJS and ASP.NET Core to FastAPI, enabling clean, testable, and maintainable code through:
 
-## Features
+- **Class-based controllers** with clean route grouping
+- **Constructor dependency injection** using Python type hints (no `Depends()` boilerplate)
+- **Service lifecycles** (Scoped, Transient, Singleton) for fine-grained control
+- **Auto-wiring** of dependencies by type
 
-- Clean constructors: keep `__init__` signatures simple and type-hinted.
-- Auto-wiring: the container resolves and injects dependencies by type.
-- Controller routing: define routes inside classes with decorators like `@get`, `@post`.
-- Lifecycle management: control when instances are created and reused.
+## Table of Contents
+
+- [Why FastAPI Construct?](#why-fastapi-construct)
+- [Installation](#installation)
+- [Quick Start](#quick-start)
+- [Features](#features)
+  - [Dependency Injection](#dependency-injection)
+  - [Service Lifecycles](#service-lifecycles)
+  - [Class-based Controllers](#class-based-controllers)
+  - [HTTP Method Decorators](#http-method-decorators)
+- [Advanced Usage](#advanced-usage)
+  - [Manual Registration](#manual-registration)
+  - [Nested Dependencies](#nested-dependencies)
+  - [Multiple Controllers](#multiple-controllers)
+- [Best Practices](#best-practices)
+- [Examples](#examples)
+- [Contributing](#contributing)
+- [License](#license)
+
+## Why FastAPI Construct?
+
+Traditional FastAPI dependency injection requires `Depends()` in function signatures, leading to verbose code:
+
+```python
+# Traditional FastAPI
+@app.get("/users/{user_id}")
+async def get_user(
+    user_id: int,
+    db: AsyncSession = Depends(get_db),
+    service: UserService = Depends(get_user_service)
+):
+    return await service.get_user(db, user_id)
+```
+
+With FastAPI Construct, dependencies are injected in the constructor, keeping route handlers clean:
+
+```python
+# FastAPI Construct
+@controller(prefix="/users")
+class UserController:
+    def __init__(self, service: IUserService):
+        self.service = service
+
+    @get("/{user_id}")
+    async def get_user(self, user_id: int):
+        return await self.service.get_user(user_id)
+```
 
 ## Installation
 
-Install from PyPI:
+Install from PyPI using pip:
 
 ```bash
 pip install fastapi-construct
 ```
 
-Or, if you use the `uv` package manager:
+Or using `uv`:
 
 ```bash
 uv add fastapi-construct
 ```
 
+**Requirements:**
+- Python 3.12+
+- FastAPI 0.122.0+
+
 ## Quick Start
 
-1) Define interfaces and implementations. Use `@injectable` to register implementations.
+### 1. Define Your Service Layer
+
+Create interfaces and implementations using the `@injectable` decorator:
 
 ```python
 from abc import ABC, abstractmethod
@@ -39,32 +91,53 @@ from fastapi_construct import injectable, ServiceLifetime
 
 class IUserService(ABC):
     @abstractmethod
-    def get_user(self, user_id: int) -> dict:
+    async def get_user(self, user_id: int) -> dict:
+        ...
+
+    @abstractmethod
+    async def create_user(self, name: str, email: str) -> dict:
         ...
 
 @injectable(IUserService, lifetime=ServiceLifetime.SCOPED)
 class UserService(IUserService):
-    def get_user(self, user_id: int) -> dict:
+    def __init__(self, db: AsyncSession):
+        self.db = db
+
+    async def get_user(self, user_id: int) -> dict:
+        # Your database logic here
         return {"id": user_id, "name": "John Doe"}
+
+    async def create_user(self, name: str, email: str) -> dict:
+        # Your database logic here
+        return {"id": 1, "name": name, "email": email}
 ```
 
-2) Create a controller. Constructor injection happens automatically.
+### 2. Create a Controller
+
+Use the `@controller` decorator to create class-based controllers:
 
 ```python
-from fastapi_construct import controller, get
-from .services import IUserService
+from fastapi_construct import controller, get, post
 
-@controller(prefix="/users", tags=["users"])
+@controller(prefix="/api/users", tags=["users"])
 class UserController:
     def __init__(self, service: IUserService):
         self.service = service
 
     @get("/{user_id}")
     async def get_user(self, user_id: int):
-        return self.service.get_user(user_id)
+        """Get a user by ID."""
+        return await self.service.get_user(user_id)
+
+    @post("/")
+    async def create_user(self, name: str, email: str):
+        """Create a new user."""
+        return await self.service.create_user(name, email)
 ```
 
-3) Register external dependencies (optional) and include the controller router in your FastAPI app.
+### 3. Register and Run Your App
+
+Include the controller router in your FastAPI application:
 
 ```python
 from fastapi import FastAPI
@@ -73,43 +146,446 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from .database import get_db
 from .controllers import UserController
 
-# Example: bind AsyncSession to your DB provider
+# Register external dependencies
 add_scoped(AsyncSession, get_db)
 
-app = FastAPI()
+# Create FastAPI app
+app = FastAPI(title="My API")
+
+# Include controller routers
 app.include_router(UserController.router)
 ```
 
-## Dependency Lifecycles
+## Features
 
-- `SCOPED` (default) — one instance per HTTP request. Good for DB sessions and request-scoped services.
-- `TRANSIENT` — a new instance every injection. Good for lightweight helpers.
-- `SINGLETON` — one instance for the app lifetime. Good for config or caches.
+### Dependency Injection
+
+FastAPI Construct uses constructor-based dependency injection, making your code cleaner and more testable:
+
+```python
+@injectable(IEmailService)
+class EmailService(IEmailService):
+    def send_email(self, to: str, subject: str, body: str):
+        # Email logic here
+        pass
+
+@injectable(IUserService)
+class UserService(IUserService):
+    def __init__(self, email_service: IEmailService):
+        self.email_service = email_service
+
+    async def create_user(self, email: str):
+        # Create user logic
+        self.email_service.send_email(email, "Welcome", "Thanks for joining!")
+        return {"email": email}
+```
+
+### Service Lifecycles
+
+Control when and how your services are instantiated:
+
+| Lifetime | Description | Use Case |
+|----------|-------------|----------|
+| **SCOPED** (default) | One instance per HTTP request | Database sessions, request-scoped services |
+| **TRANSIENT** | New instance every injection | Lightweight helpers, stateless services |
+| **SINGLETON** | One instance for app lifetime | Configuration, caches, shared resources |
 
 ```python
 from fastapi_construct import injectable, ServiceLifetime
 
-@injectable(IMyService, lifetime=ServiceLifetime.SINGLETON)
-class MySingletonService(IMyService):
-    ...
+@injectable(IConfigService, lifetime=ServiceLifetime.SINGLETON)
+class ConfigService(IConfigService):
+    def __init__(self):
+        self.settings = self._load_settings()
+
+@injectable(IUserService, lifetime=ServiceLifetime.SCOPED)
+class UserService(IUserService):
+    def __init__(self, db: AsyncSession):
+        self.db = db
+
+@injectable(IHelperService, lifetime=ServiceLifetime.TRANSIENT)
+class HelperService(IHelperService):
+    def process_data(self, data: dict) -> dict:
+        return {"processed": True, **data}
 ```
 
-## Manual Registration (3rd-party libraries)
+### Class-based Controllers
 
-To inject types you don't control (e.g., a 3rd-party client or DB session factory), use the `add_*` helpers:
+Organize your routes using class-based controllers with clean decorators:
 
 ```python
-from fastapi_construct import add_singleton, add_scoped
-from some_lib import Client
+from fastapi_construct import controller, get, post, put, delete, patch
 
-# Register a 3rd-party client as a singleton
-add_singleton(Client, Client)
+@controller(prefix="/api/items", tags=["items"])
+class ItemController:
+    def __init__(self, item_service: IItemService):
+        self.item_service = item_service
+
+    @get("/")
+    async def list_items(self, skip: int = 0, limit: int = 10):
+        """List all items with pagination."""
+        return await self.item_service.list_items(skip, limit)
+
+    @get("/{item_id}")
+    async def get_item(self, item_id: int):
+        """Get a specific item by ID."""
+        return await self.item_service.get_item(item_id)
+
+    @post("/", status_code=201)
+    async def create_item(self, name: str, description: str):
+        """Create a new item."""
+        return await self.item_service.create_item(name, description)
+
+    @put("/{item_id}")
+    async def update_item(self, item_id: int, name: str, description: str):
+        """Update an existing item."""
+        return await self.item_service.update_item(item_id, name, description)
+
+    @patch("/{item_id}")
+    async def partial_update(self, item_id: int, name: str | None = None):
+        """Partially update an item."""
+        return await self.item_service.partial_update(item_id, name)
+
+    @delete("/{item_id}", status_code=204)
+    async def delete_item(self, item_id: int):
+        """Delete an item."""
+        await self.item_service.delete_item(item_id)
+```
+
+### HTTP Method Decorators
+
+FastAPI Construct provides decorators for all HTTP methods:
+
+- `@get(path, **kwargs)` - GET requests
+- `@post(path, **kwargs)` - POST requests
+- `@put(path, **kwargs)` - PUT requests
+- `@patch(path, **kwargs)` - PATCH requests
+- `@delete(path, **kwargs)` - DELETE requests
+
+All decorators support FastAPI's standard parameters:
+
+```python
+@get(
+    "/{user_id}",
+    response_model=UserResponse,
+    status_code=200,
+    summary="Get user by ID",
+    description="Retrieve a user's details by their unique identifier",
+    tags=["users"]
+)
+async def get_user(self, user_id: int):
+    return await self.service.get_user(user_id)
+```
+
+## Advanced Usage
+
+### Manual Registration
+
+For third-party libraries or types you don't control, use manual registration:
+
+```python
+from fastapi_construct import add_singleton, add_scoped, add_transient
+from redis.asyncio import Redis
+from httpx import AsyncClient
+
+# Register a Redis client as singleton
+def get_redis():
+    return Redis(host="localhost", port=6379)
+
+add_singleton(Redis, get_redis)
+
+# Register httpx client as scoped
+async def get_http_client():
+    async with AsyncClient() as client:
+        yield client
+
+add_scoped(AsyncClient, get_http_client)
+
+# Now use them in your services
+@injectable(ICacheService)
+class CacheService(ICacheService):
+    def __init__(self, redis: Redis, http: AsyncClient):
+        self.redis = redis
+        self.http = http
+```
+
+### Nested Dependencies
+
+FastAPI Construct automatically resolves nested dependency chains:
+
+```python
+@injectable(IDatabase)
+class Database(IDatabase):
+    def query(self, sql: str):
+        # Database logic
+        pass
+
+@injectable(IRepository)
+class UserRepository(IRepository):
+    def __init__(self, db: IDatabase):
+        self.db = db
+
+    def get_user(self, user_id: int):
+        return self.db.query(f"SELECT * FROM users WHERE id = {user_id}")
+
+@injectable(IUserService)
+class UserService(IUserService):
+    def __init__(self, repo: IRepository):
+        self.repo = repo
+
+    def get_user(self, user_id: int):
+        return self.repo.get_user(user_id)
+
+@controller(prefix="/users")
+class UserController:
+    def __init__(self, service: IUserService):
+        # UserService -> UserRepository -> Database
+        # All automatically injected!
+        self.service = service
+```
+
+### Multiple Controllers
+
+Organize your application with multiple controllers:
+
+```python
+from fastapi import FastAPI
+
+# Define controllers
+@controller(prefix="/api/v1/users", tags=["users"])
+class UserController:
+    ...
+
+@controller(prefix="/api/v1/posts", tags=["posts"])
+class PostController:
+    ...
+
+@controller(prefix="/api/v1/comments", tags=["comments"])
+class CommentController:
+    ...
+
+# Register all controllers
+app = FastAPI()
+app.include_router(UserController.router)
+app.include_router(PostController.router)
+app.include_router(CommentController.router)
+```
+
+## Best Practices
+
+### 1. Use Interfaces for Abstraction
+
+Define interfaces (abstract base classes) for better testability and loose coupling:
+
+```python
+from abc import ABC, abstractmethod
+
+class IUserService(ABC):
+    @abstractmethod
+    async def get_user(self, user_id: int) -> dict:
+        ...
+
+# Easy to mock in tests
+class MockUserService(IUserService):
+    async def get_user(self, user_id: int) -> dict:
+        return {"id": user_id, "name": "Test User"}
+```
+
+### 2. Choose Appropriate Lifetimes
+
+- Use **SCOPED** for database sessions and request-specific state
+- Use **SINGLETON** for expensive-to-create resources (DB pools, config)
+- Use **TRANSIENT** for lightweight, stateless services
+
+### 3. Keep Controllers Thin
+
+Controllers should delegate business logic to services:
+
+```python
+# Good ✅
+@controller(prefix="/users")
+class UserController:
+    def __init__(self, service: IUserService):
+        self.service = service
+
+    @post("/")
+    async def create_user(self, user_data: UserCreate):
+        return await self.service.create_user(user_data)
+
+# Bad ❌
+@controller(prefix="/users")
+class UserController:
+    def __init__(self, db: Database):
+        self.db = db
+
+    @post("/")
+    async def create_user(self, user_data: UserCreate):
+        # Too much logic in controller!
+        user = User(**user_data.dict())
+        self.db.add(user)
+        await self.db.commit()
+        return user
+```
+
+### 4. Organize by Feature
+
+Structure your project by feature, not by type:
+
+```
+src/
+├── users/
+│   ├── __init__.py
+│   ├── controllers.py
+│   ├── services.py
+│   ├── repositories.py
+│   └── models.py
+├── posts/
+│   ├── __init__.py
+│   ├── controllers.py
+│   ├── services.py
+│   └── models.py
+└── main.py
+```
+
+## Examples
+
+### Complete CRUD Example
+
+```python
+from abc import ABC, abstractmethod
+from fastapi import FastAPI
+from fastapi_construct import (
+    injectable,
+    controller,
+    get,
+    post,
+    put,
+    delete,
+    ServiceLifetime,
+)
+
+# Interface
+class IProductService(ABC):
+    @abstractmethod
+    async def list_products(self) -> list[dict]:
+        ...
+
+    @abstractmethod
+    async def get_product(self, product_id: int) -> dict:
+        ...
+
+    @abstractmethod
+    async def create_product(self, name: str, price: float) -> dict:
+        ...
+
+    @abstractmethod
+    async def update_product(self, product_id: int, name: str, price: float) -> dict:
+        ...
+
+    @abstractmethod
+    async def delete_product(self, product_id: int) -> None:
+        ...
+
+# Service implementation
+@injectable(IProductService, lifetime=ServiceLifetime.SCOPED)
+class ProductService(IProductService):
+    def __init__(self):
+        self.products = {
+            1: {"id": 1, "name": "Product 1", "price": 10.99},
+            2: {"id": 2, "name": "Product 2", "price": 20.99},
+        }
+        self.next_id = 3
+
+    async def list_products(self) -> list[dict]:
+        return list(self.products.values())
+
+    async def get_product(self, product_id: int) -> dict:
+        return self.products.get(product_id, {})
+
+    async def create_product(self, name: str, price: float) -> dict:
+        product = {"id": self.next_id, "name": name, "price": price}
+        self.products[self.next_id] = product
+        self.next_id += 1
+        return product
+
+    async def update_product(self, product_id: int, name: str, price: float) -> dict:
+        if product_id in self.products:
+            self.products[product_id] = {"id": product_id, "name": name, "price": price}
+            return self.products[product_id]
+        return {}
+
+    async def delete_product(self, product_id: int) -> None:
+        self.products.pop(product_id, None)
+
+# Controller
+@controller(prefix="/api/products", tags=["products"])
+class ProductController:
+    def __init__(self, service: IProductService):
+        self.service = service
+
+    @get("/")
+    async def list_products(self):
+        """List all products."""
+        return await self.service.list_products()
+
+    @get("/{product_id}")
+    async def get_product(self, product_id: int):
+        """Get a product by ID."""
+        return await self.service.get_product(product_id)
+
+    @post("/", status_code=201)
+    async def create_product(self, name: str, price: float):
+        """Create a new product."""
+        return await self.service.create_product(name, price)
+
+    @put("/{product_id}")
+    async def update_product(self, product_id: int, name: str, price: float):
+        """Update a product."""
+        return await self.service.update_product(product_id, name, price)
+
+    @delete("/{product_id}", status_code=204)
+    async def delete_product(self, product_id: int):
+        """Delete a product."""
+        await self.service.delete_product(product_id)
+
+# Application
+app = FastAPI(title="Products API")
+app.include_router(ProductController.router)
 ```
 
 ## Contributing
 
-Contributions are welcome — please open a PR with tests and a clear description of the change.
+Contributions are welcome! Please follow these steps:
+
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
+3. Make your changes
+4. Add tests for your changes
+5. Run tests (`pytest tests/`)
+6. Run linting (`ruff check . && ruff format .`)
+7. Commit your changes (`git commit -m 'Add amazing feature'`)
+8. Push to the branch (`git push origin feature/amazing-feature`)
+9. Open a Pull Request
+
+Please ensure:
+- All tests pass
+- Code follows Ruff formatting standards
+- New features include tests
+- Documentation is updated
 
 ## License
 
-This project is licensed under the MIT License.
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## Acknowledgments
+
+Inspired by:
+- [NestJS](https://nestjs.com/) - A progressive Node.js framework
+- [ASP.NET Core](https://docs.microsoft.com/en-us/aspnet/core/) - Microsoft's web framework
+- [FastAPI](https://fastapi.tiangolo.com/) - The amazing Python web framework
+
+---
+
+**Made with ❤️ for the FastAPI community**
+
+[⭐ Star on GitHub](https://github.com/Zozi96/fastapi-construct) | [📝 Report Issues](https://github.com/Zozi96/fastapi-construct/issues) | [📖 Documentation](https://github.com/Zozi96/fastapi-construct#readme)
