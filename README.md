@@ -1,7 +1,10 @@
 # FastAPI Construct
 
-[![Python Version](https://img.shields.io/badge/python-3.12%2B-blue.svg)](https://www.python.org/downloads/)
+[![Tests](https://github.com/Zozi96/fastapi-construct/actions/workflows/test.yml/badge.svg)](https://github.com/Zozi96/fastapi-construct/actions/workflows/test.yml)
+[![PyPI version](https://badge.fury.io/py/fastapi-construct.svg)](https://pypi.org/project/fastapi-construct/)
+[![Python Version](https://img.shields.io/pypi/pyversions/fastapi-construct)](https://pypi.org/project/fastapi-construct/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Downloads](https://img.shields.io/pypi/dm/fastapi-construct)](https://pypi.org/project/fastapi-construct/)
 [![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
 
 > A lightweight dependency injection library for FastAPI with NestJS/ASP.NET Core style architecture

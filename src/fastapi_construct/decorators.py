@@ -46,7 +46,11 @@ def injectable[T](interface: type[T], lifetime: ServiceLifetime = ServiceLifetim
             Type[T]: The original class, unmodified but registered and configured for autowiring.
         """
         register_dependency(interface, cls, lifetime)
-        autowire_callable(cls.__init__)
+
+        # Only autowire if __init__ is defined in the class (not inherited from object)
+        if "__init__" in cls.__dict__:
+            autowire_callable(cls.__init__)
+
         return cls
 
     return decorator
@@ -120,43 +124,58 @@ def controller(router: APIRouter | None = None, **kwargs: Unpack[APIRouterArgs])
                 router.tags.extend(kwargs["tags"])  # type: ignore
 
         cls.router = router  # type: ignore
-        autowire_callable(cls.__init__)
+
+        # Only autowire if __init__ is defined in the class (not inherited from object)
+        if "__init__" in cls.__dict__:
+            autowire_callable(cls.__init__)
 
         def get_instance(**kwargs):
             return cls(**kwargs)
 
-        get_instance.__signature__ = inspect.signature(cls.__init__)  # type: ignore
+        # Set signature for get_instance, excluding 'self' parameter
+        init_sig = inspect.signature(cls.__init__)
+        init_params = [p for n, p in init_sig.parameters.items() if n != "self"]
+        get_instance.__signature__ = init_sig.replace(parameters=init_params)  # type: ignore
 
         for name, method in inspect.getmembers(cls, predicate=inspect.isfunction):
             if name.startswith("_"):
                 continue
 
             if hasattr(method, "_route_metadata"):
-                metadata = method._route_metadata  # type: ignore
+                metadata = method._route_metadata.copy()  # type: ignore
 
-                async def endpoint_wrapper(
-                    _controller_instance: cls = Depends(get_instance),  # type: ignore  # noqa: B008
-                    **endpoint_kwargs,
-                ):
-                    method_to_call = getattr(_controller_instance, name)  # noqa: B023
-                    if inspect.iscoroutinefunction(method_to_call):
-                        return await method_to_call(**endpoint_kwargs)
-                    return method_to_call(**endpoint_kwargs)
+                # Create a factory function to capture the current method name in the closure
+                def make_endpoint(method_name: str):
+                    async def endpoint_wrapper(
+                        **endpoint_kwargs,
+                    ):
+                        # Get controller instance from Depends
+                        _controller_instance = endpoint_kwargs.pop("_controller_instance")
+                        method_to_call = getattr(_controller_instance, method_name)
+                        if inspect.iscoroutinefunction(method_to_call):
+                            return await method_to_call(**endpoint_kwargs)
+                        return method_to_call(**endpoint_kwargs)
 
+                    return endpoint_wrapper
+
+                endpoint_wrapper = make_endpoint(name)
                 endpoint_wrapper.__name__ = name
                 endpoint_wrapper.__doc__ = method.__doc__
 
                 sig = inspect.signature(method)
-                params = list(sig.parameters.values())[1:]  # Skip self
+                # Skip 'self' parameter
+                params_list = list(sig.parameters.items())
+                params = [p for n, p in params_list if n != "self"]
 
-                endpoint_wrapper.__signature__ = sig.replace(
-                    parameters=[
-                        *params,
-                        inspect.Parameter(
-                            "_controller_instance", inspect.Parameter.KEYWORD_ONLY, default=Depends(get_instance)
-                        ),
-                    ]
+                # Add controller instance parameter with include_in_schema=False
+                controller_param = inspect.Parameter(
+                    "_controller_instance",
+                    inspect.Parameter.KEYWORD_ONLY,
+                    default=Depends(get_instance),
                 )
+
+                # Set signature with method params + hidden controller instance
+                endpoint_wrapper.__signature__ = sig.replace(parameters=params + [controller_param])
 
                 path = metadata.pop("path")
                 method_verb = metadata.pop("method")
