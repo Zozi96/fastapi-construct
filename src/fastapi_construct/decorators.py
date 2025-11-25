@@ -185,3 +185,6 @@ def controller(router: APIRouter | None = None, **kwargs: Unpack[APIRouterArgs])
         return cls
 
     return decorator
+
+
+inject = autowire_callable

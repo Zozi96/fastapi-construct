@@ -13,6 +13,7 @@ FastAPI Construct brings the elegant patterns of NestJS and ASP.NET Core to Fast
 
 - **Class-based controllers** with clean route grouping
 - **Constructor dependency injection** using Python type hints (no `Depends()` boilerplate)
+- **Function injection** with `@inject` decorator for regular functions and endpoints
 - **Service lifecycles** (Scoped, Transient, Singleton) for fine-grained control
 - **Auto-wiring** of dependencies by type
 
@@ -23,6 +24,7 @@ FastAPI Construct brings the elegant patterns of NestJS and ASP.NET Core to Fast
 - [Quick Start](#quick-start)
 - [Features](#features)
   - [Dependency Injection](#dependency-injection)
+  - [Function Injection](#function-injection)
   - [Service Lifecycles](#service-lifecycles)
   - [Class-based Controllers](#class-based-controllers)
   - [HTTP Method Decorators](#http-method-decorators)
@@ -53,7 +55,7 @@ async def get_user(
 With FastAPI Construct, dependencies are injected in the constructor, keeping route handlers clean:
 
 ```python
-# FastAPI Construct
+# FastAPI Construct - Controllers
 @controller(prefix="/users")
 class UserController:
     def __init__(self, service: IUserService):
@@ -62,6 +64,19 @@ class UserController:
     @get("/{user_id}")
     async def get_user(self, user_id: int):
         return await self.service.get_user(user_id)
+```
+
+Or use `@inject` for helper functions used as dependencies:
+
+```python
+# FastAPI Construct - Function Injection
+@inject
+def get_user_data(user_id: int, service: IUserService) -> dict:
+    return service.get_user(user_id)
+
+@app.get("/users/{user_id}")
+def get_user(user_id: int, data: dict = Depends(get_user_data)):
+    return data
 ```
 
 ## Installation
@@ -182,6 +197,44 @@ class UserService(IUserService):
         self.email_service.send_email(email, "Welcome", "Thanks for joining!")
         return {"email": email}
 ```
+
+### Function Injection
+
+Use the `@inject` decorator to inject dependencies into helper functions that can then be used as FastAPI dependencies:
+
+```python
+from fastapi_construct import inject
+
+# Define a helper function with @inject
+@inject
+def get_current_user(token: str, auth_service: IAuthService) -> User:
+    """
+    Dependencies are automatically injected based on type hints.
+    No need to use Depends() for registered services.
+    """
+    return auth_service.validate_token(token)
+
+# Use the injected function as a dependency in endpoints
+@app.get("/profile")
+def get_profile(user: User = Depends(get_current_user)):
+    return {"user": user}
+
+# Or create reusable business logic functions
+@inject
+def process_order(order_data: dict, service: IOrderService) -> dict:
+    return service.process(order_data)
+
+@app.post("/orders")
+def create_order(result: dict = Depends(process_order)):
+    return result
+```
+
+The `@inject` decorator works by:
+1. Inspecting the function signature
+2. Replacing type-annotated parameters with `Depends(provider)` for registered services
+3. Allowing FastAPI to resolve dependencies automatically at runtime
+
+> **Note**: Use `@inject` on helper/utility functions that you'll use with `Depends()`, not directly on route handler functions. For route handlers, use the `@controller` decorator with class-based controllers instead.
 
 ### Service Lifecycles
 
