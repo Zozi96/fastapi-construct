@@ -72,7 +72,7 @@ def test_function_injection_as_endpoint():
 
     # Use the injected function as a dependency
     @app.get("/endpoint")
-    def endpoint(service: IService = Depends(dependency_function)):
+    def endpoint(service: IService = Depends(dependency_function)):  # noqa: B008
         return {"value": service.get_value()}
 
     client = TestClient(app)
