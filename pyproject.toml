@@ -44,6 +44,7 @@ Repository = "https://github.com/Zozi96/fastapi-construct"
 Documentation = "https://github.com/Zozi96/fastapi-construct#readme"
 "Bug Tracker" = "https://github.com/Zozi96/fastapi-construct/issues"
 Changelog = "https://github.com/Zozi96/fastapi-construct/releases"
+PyPI = "https://pypi.org/project/fastapi-construct/"
 
 [build-system]
 requires = ["uv_build>=0.9.10,<0.10.0"]

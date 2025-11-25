@@ -81,7 +81,7 @@ def get_user(user_id: int, data: dict = Depends(get_user_data)):
 
 ## Installation
 
-Install from PyPI using pip:
+Install from [PyPI](https://pypi.org/project/fastapi-construct/) using pip:
 
 ```bash
 pip install fastapi-construct
