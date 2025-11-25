@@ -156,7 +156,7 @@ def controller(router: APIRouter | None = None, **kwargs: Unpack[APIRouterArgs])
                             return await method_to_call(**endpoint_kwargs)
                         return method_to_call(**endpoint_kwargs)
 
-                    return endpoint_wrapper
+                    return endpoint_wrapper  # noqa: B023
 
                 endpoint_wrapper = make_endpoint(name)
                 endpoint_wrapper.__name__ = name
@@ -175,7 +175,7 @@ def controller(router: APIRouter | None = None, **kwargs: Unpack[APIRouterArgs])
                 )
 
                 # Set signature with method params + hidden controller instance
-                endpoint_wrapper.__signature__ = sig.replace(parameters=params + [controller_param])
+                endpoint_wrapper.__signature__ = sig.replace(parameters=[*params, controller_param])
 
                 path = metadata.pop("path")
                 method_verb = metadata.pop("method")

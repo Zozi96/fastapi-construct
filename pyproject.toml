@@ -1,6 +1,6 @@
 [project]
 name = "fastapi-construct"
-version = "1.0.1"
+version = "1.0.2"
 description = "A lightweight dependency injection library for FastAPI with NestJS/ASP.NET Core style architecture"
 readme = "README.md"
 license = { text = "MIT" }
