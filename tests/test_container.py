@@ -12,9 +12,9 @@ from fastapi_construct.enums import ServiceLifetime
 @pytest.fixture(autouse=True)
 def clear_registry() -> Generator[None, Any, None]:
     """Clear the dependency registry before and after each test."""
-    container._dependency_registry.clear()
+    container.default_container._registry.clear()
     yield
-    container._dependency_registry.clear()
+    container.default_container._registry.clear()
 
 
 class TestTransientLifetime:

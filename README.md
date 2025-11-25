@@ -420,11 +420,43 @@ class PostController:
 class CommentController:
     ...
 
+```python
 # Register all controllers
 app = FastAPI()
 app.include_router(UserController.router)
 app.include_router(PostController.router)
 app.include_router(CommentController.router)
+```
+
+### Container & Error Handling
+
+FastAPI Construct uses a `Container` class to manage dependencies. While the global helper functions (`add_scoped`, etc.) are sufficient for most cases, you can access the container directly for advanced scenarios.
+
+#### Circular Dependencies
+
+The library automatically detects circular dependencies during resolution and raises a `CircularDependencyError` with a helpful message, preventing infinite recursion crashes.
+
+```python
+class A:
+    def __init__(self, b: B): ...
+
+class B:
+    def __init__(self, a: A): ...
+
+# This will raise CircularDependencyError when resolved
+container.resolve(A)
+```
+
+#### Custom Container
+
+You can create your own `Container` instance for isolation (e.g., for testing):
+
+```python
+from fastapi_construct.container import Container
+
+my_container = Container()
+my_container.register(IService, ServiceImpl)
+instance = my_container.resolve(IService)
 ```
 
 ## Best Practices

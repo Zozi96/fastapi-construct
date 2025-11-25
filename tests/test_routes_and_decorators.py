@@ -15,9 +15,9 @@ from fastapi_construct.routes import delete, get, patch, post, put
 @pytest.fixture(autouse=True)
 def clear_registry() -> Generator[None, Any, None]:
     """Clear the dependency registry before and after each test."""
-    container._dependency_registry.clear()
+    container.default_container._registry.clear()
     yield
-    container._dependency_registry.clear()
+    container.default_container._registry.clear()
 
 
 class TestRouteDecorators:
@@ -224,7 +224,7 @@ class TestControllerDecorator:
 
             @get("/value")
             def get_value(self) -> str:
-                return self.service.value # type: ignore
+                return self.service.value  # type: ignore
 
         assert hasattr(TestController, "router")
 
@@ -353,7 +353,7 @@ class TestIntegrationScenarios:
 
             @get("/{user_id}")
             def get_user(self, user_id: int) -> dict:
-                return {"user": self.service.get_user(user_id)} # type: ignore
+                return {"user": self.service.get_user(user_id)}  # type: ignore
 
         # Verify controller was created with router
         assert hasattr(UserController, "router")
@@ -385,7 +385,7 @@ class TestIntegrationScenarios:
 
             @get("/data")
             def get_data(self) -> dict:
-                return {"data": self.service.repo.data} # type: ignore
+                return {"data": self.service.repo.data}  # type: ignore
 
         # Verify all dependencies are registered
         assert container.get_dependency_config(IRepo) is not None

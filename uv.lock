@@ -81,7 +81,7 @@ wheels = [
 
 [[package]]
 name = "fastapi-construct"
-version = "1.0.3"
+version = "1.0.4"
 source = { editable = "." }
 dependencies = [
     { name = "fastapi" },

@@ -1,18 +1,19 @@
 import inspect
 from collections.abc import Callable
 from functools import lru_cache
-from typing import Any
+from typing import Any, TypeVar
 
 from .enums import ServiceLifetime
+from .exceptions import CircularDependencyError, DependencyNotFoundError, DependencyRegistrationError
+
+
+T = TypeVar("T")
 
 
 class DependencyConfig:
     def __init__(self, provider: Callable, lifetime: ServiceLifetime) -> None:
         self.provider = provider
         self.lifetime = lifetime
-
-
-_dependency_registry: dict[type[Any], DependencyConfig] = {}
 
 
 def _create_singleton_wrapper(cls: type[Any]) -> Callable:
@@ -27,89 +28,152 @@ def _create_singleton_wrapper(cls: type[Any]) -> Callable:
     return singleton_factory
 
 
+class Container:
+    """
+    Dependency Injection Container.
+
+    Manages the registration and resolution of dependencies.
+    """
+
+    def __init__(self):
+        self._registry: dict[type[Any], DependencyConfig] = {}
+        self._resolving: set[type[Any]] = set()
+
+    def register(
+        self,
+        interface: type[Any],
+        provider: Callable,
+        lifetime: ServiceLifetime = ServiceLifetime.SCOPED,
+    ) -> None:
+        """
+        Registers a dependency provider for a specific interface.
+
+        Args:
+            interface: The type or interface to register.
+            provider: The callable responsible for creating the dependency instance.
+            lifetime: The scope of the dependency instance.
+
+        Raises:
+            DependencyRegistrationError: If the provider is invalid.
+        """
+        if not callable(provider):
+            raise DependencyRegistrationError(f"Provider for {interface} must be callable.")
+
+        final_provider = provider
+
+        if lifetime == ServiceLifetime.SINGLETON and inspect.isclass(provider):
+            final_provider = _create_singleton_wrapper(provider)
+
+        self._registry[interface] = DependencyConfig(final_provider, lifetime)
+
+    def get_config(self, interface: type[Any]) -> DependencyConfig | None:
+        """
+        Retrieves the dependency configuration for a given interface.
+
+        Args:
+            interface: The interface or type to retrieve.
+
+        Returns:
+            The configuration if found, None otherwise.
+        """
+        return self._registry.get(interface)
+
+    def resolve(self, interface: type[T]) -> T:
+        """
+        Resolves a dependency recursively.
+
+        Args:
+            interface: The interface or type to resolve.
+
+        Returns:
+            The resolved instance.
+
+        Raises:
+            DependencyNotFoundError: If the dependency is not registered.
+            CircularDependencyError: If a circular dependency is detected.
+        """
+        if interface in self._resolving:
+            raise CircularDependencyError(f"Circular dependency detected for {interface}")
+
+        config = self.get_config(interface)
+        if not config:
+            raise DependencyNotFoundError(f"No provider registered for {interface}")
+
+        self._resolving.add(interface)
+        try:
+            provider = config.provider
+
+            # Determine signature to inspect
+            if inspect.isclass(provider):
+                sig = inspect.signature(provider.__init__)
+                # Remove self parameter for class __init__
+                params = [p for name, p in sig.parameters.items() if name != "self"]
+                sig = sig.replace(parameters=params)
+            else:
+                sig = inspect.signature(provider)
+
+            # Resolve arguments
+            kwargs = {}
+            for name, param in sig.parameters.items():
+                if param.annotation != inspect.Parameter.empty and self.get_config(param.annotation):
+                    # Check if annotation is a registered dependency
+                    kwargs[name] = self.resolve(param.annotation)
+                    continue
+
+                # If not a dependency, check for default value
+                if param.default != inspect.Parameter.empty:
+                    # If default is a Depends object (from autowiring), we might want to resolve it?
+                    # But for manual resolution, we usually rely on type hints.
+                    # If we can't resolve it and there is a default, use the default.
+                    kwargs[name] = param.default
+                    continue
+
+                # If we can't resolve and no default, we can't proceed (unless we want to pass None?)
+                # For now, let it fail at call time or raise here.
+                # Let's try to resolve it anyway if it's a class, maybe it's a concrete class not registered?
+                # But we only resolve registered dependencies.
+
+            return provider(**kwargs)
+        finally:
+            self._resolving.remove(interface)
+
+
+# Global default container
+default_container = Container()
+
+
 def register_dependency(
     interface: type[Any], provider: Callable, lifetime: ServiceLifetime = ServiceLifetime.SCOPED
 ) -> None:
     """
-    Registers a dependency provider for a specific interface with a defined lifetime.
-
-    This function maps an interface (usually an abstract base class or a type) to a
-    concrete provider (a class or a factory function). It handles the logic for
-    different service lifetimes, specifically wrapping class-based providers in a
-    singleton wrapper if the lifetime is set to SINGLETON.
-
-    Args:
-        interface (Type[Any]): The type or interface to register. This is the key used
-            for dependency injection resolution.
-        provider (Callable): The callable responsible for creating the dependency instance.
-            This can be a class or a factory function.
-        lifetime (ServiceLifetime, optional): The scope of the dependency instance.
-            Defaults to ServiceLifetime.SCOPED.
-
-    Returns:
-        None
+    Registers a dependency provider in the default container.
     """
-    final_provider = provider
-
-    if lifetime == ServiceLifetime.SINGLETON and inspect.isclass(provider):
-        final_provider = _create_singleton_wrapper(provider)
-
-    _dependency_registry[interface] = DependencyConfig(final_provider, lifetime)
+    default_container.register(interface, provider, lifetime)
 
 
 def get_dependency_config(interface: type[Any]) -> DependencyConfig | None:
     """
-    Retrieves the dependency configuration for a given interface.
-
-    Args:
-        interface (Type[Any]): The interface or type for which to retrieve the configuration.
-
-    Returns:
-        Optional[DependencyConfig]: The configuration associated with the interface if found,
-        otherwise None.
+    Retrieves dependency configuration from the default container.
     """
-    return _dependency_registry.get(interface)
+    return default_container.get_config(interface)
 
 
 def add_transient(interface: type[Any], provider: Callable) -> None:
     """
-    Registers a transient dependency.
-
-    Transient services are created each time they are requested. This method
-    registers a provider callable against an interface type with the
-    TRANSIENT lifetime scope.
-
-    Args:
-        interface (Type[Any]): The abstract base class or type definition
-            that identifies the dependency.
-        provider (Callable): The factory function or class constructor
-            responsible for creating the instance of the dependency.
+    Registers a transient dependency in the default container.
     """
-    register_dependency(interface, provider, ServiceLifetime.TRANSIENT)
+    default_container.register(interface, provider, ServiceLifetime.TRANSIENT)
 
 
 def add_scoped(interface: type[Any], provider: Callable) -> None:
     """
-    Registers a dependency with a scoped lifetime.
-
-    Scoped dependencies are created once per request (or scope).
-
-    Args:
-        interface (Type[Any]): The interface or type to register.
-        provider (Callable): The callable (function or class) that provides the implementation.
+    Registers a scoped dependency in the default container.
     """
-    register_dependency(interface, provider, ServiceLifetime.SCOPED)
+    default_container.register(interface, provider, ServiceLifetime.SCOPED)
 
 
 def add_singleton(interface: type[Any], provider: Callable) -> None:
     """
-    Registers a singleton dependency.
-
-    A singleton dependency is created once and shared across the entire application lifetime.
-    Subsequent requests for this interface will receive the same instance.
-
-    Args:
-        interface (Type[Any]): The type or interface to register.
-        provider (Callable): The callable (function or class) that provides the instance.
+    Registers a singleton dependency in the default container.
     """
-    register_dependency(interface, provider, ServiceLifetime.SINGLETON)
+    default_container.register(interface, provider, ServiceLifetime.SINGLETON)
