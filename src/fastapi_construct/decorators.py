@@ -1,7 +1,8 @@
 import inspect
 from typing import Any, TypeVar, Unpack
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Response
+from starlette.responses import Response as StarletteResponse
 
 from .container import register_dependency
 from .enums import ServiceLifetime
@@ -129,13 +130,21 @@ def controller(router: APIRouter | None = None, **kwargs: Unpack[APIRouterArgs])
         if "__init__" in cls.__dict__:
             autowire_callable(cls.__init__)
 
-        def get_instance(**kwargs):
-            return cls(**kwargs)
+            def get_instance(**kwargs):
+                return cls(**kwargs)
 
-        # Set signature for get_instance, excluding 'self' parameter
-        init_sig = inspect.signature(cls.__init__)
-        init_params = [p for n, p in init_sig.parameters.items() if n != "self"]
-        get_instance.__signature__ = init_sig.replace(parameters=init_params)  # type: ignore
+            # Set signature for get_instance, excluding 'self' parameter and variadic args
+            init_sig = inspect.signature(cls.__init__)
+            init_params = [
+                p
+                for n, p in init_sig.parameters.items()
+                if n != "self" and p.kind not in {inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD}
+            ]
+            get_instance.__signature__ = init_sig.replace(parameters=init_params)  # type: ignore
+        else:
+
+            def get_instance():
+                return cls()
 
         for name, method in inspect.getmembers(cls, predicate=inspect.isfunction):
             if name.startswith("_"):
@@ -143,6 +152,24 @@ def controller(router: APIRouter | None = None, **kwargs: Unpack[APIRouterArgs])
 
             if hasattr(method, "_route_metadata"):
                 metadata = method._route_metadata.copy()  # type: ignore
+
+                # Check if return annotation contains Response and response_model is not set
+                if "response_model" not in metadata:
+                    return_annotation = inspect.signature(method).return_annotation
+                    if return_annotation is not inspect.Signature.empty:
+                        # Helper to check if a type is or contains Response
+                        def contains_response(type_hint: Any) -> bool:
+                            if type_hint is Response or type_hint is StarletteResponse:
+                                return True
+                            # Handle Union, Optional, etc.
+                            origin = getattr(type_hint, "__origin__", None)
+                            if origin:
+                                args = getattr(type_hint, "__args__", ())
+                                return any(contains_response(arg) for arg in args)
+                            return False
+
+                        if contains_response(return_annotation):
+                            metadata["response_model"] = None
 
                 # Create a factory function to capture the current method name in the closure
                 def make_endpoint(method_name: str):
