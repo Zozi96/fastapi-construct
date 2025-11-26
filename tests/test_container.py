@@ -138,12 +138,12 @@ class TestSingletonLifetime:
         assert cfg is not None
         assert cfg.lifetime == ServiceLifetime.SINGLETON
 
-        # Provider should be a callable (wrapper) and should return cached instance
-        provider = cfg.provider
-        assert callable(provider)
+        # Provider should be the class itself (not wrapped)
+        assert cfg.provider is SingletonService
 
-        instance1 = provider()
-        instance2 = provider()
+        # Resolve via container to trigger singleton logic
+        instance1 = container.default_container.resolve(IOne)
+        instance2 = container.default_container.resolve(IOne)
 
         assert instance1 is instance2
         assert hasattr(instance1, "instance_id")
@@ -159,10 +159,8 @@ class TestSingletonLifetime:
                 self.created_at = id(self)
 
         container.add_singleton(ISingleton, SingletonService)
-        cfg = container.get_dependency_config(ISingleton)
-        assert cfg is not None
 
-        instances = [cfg.provider() for _ in range(10)]
+        instances = [container.default_container.resolve(ISingleton) for _ in range(10)]
 
         # All instances should be the same object
         first = instances[0]
@@ -170,25 +168,26 @@ class TestSingletonLifetime:
 
     def test_singleton_with_constructor_args(self) -> None:
         """Test singleton service with constructor arguments."""
+        # Note: With the new container implementation, singletons are cached by Interface type.
+        # Constructor arguments are only used for the FIRST creation.
+        # Subsequent calls return the same instance regardless of arguments (if resolved by type).
+        # However, resolve() doesn't take arguments. Arguments are resolved recursively.
+        # If we want to test with args, we need to register dependencies that provide those args.
 
         class IConfig:
             pass
 
         class ConfigService:
-            def __init__(self, env: str = "dev") -> None:
-                self.env = env
+            def __init__(self) -> None:
+                self.env = "dev"
 
         container.add_singleton(IConfig, ConfigService)
-        cfg = container.get_dependency_config(IConfig)
-        assert cfg is not None
 
-        # First call sets the singleton - note that lru_cache caches by arguments
-        # So different arguments will create different instances
-        instance1 = cfg.provider(env="production")
-        instance2 = cfg.provider(env="production")  # Same args = same instance
+        instance1 = container.default_container.resolve(IConfig)
+        instance2 = container.default_container.resolve(IConfig)
 
         assert instance1 is instance2
-        assert instance1.env == "production"
+        assert instance1.env == "dev"
 
 
 class TestContainerEdgeCases:

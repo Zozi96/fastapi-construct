@@ -333,6 +333,22 @@ async def get_user(self, user_id: int):
     return await self.service.get_user(user_id)
 ```
 
+#### Automatic Response Model Handling
+
+If your controller method returns a `fastapi.Response` object (or subclass), `fastapi-construct` automatically sets `response_model=None` for that route. This prevents validation errors and allows you to return raw responses easily.
+
+```python
+from fastapi import Response
+
+@get("/raw")
+def raw_response(self) -> Response:
+    return Response(content="raw data", media_type="text/plain")
+```
+
+#### Variadic Arguments
+
+Controllers support `*args` and `**kwargs` in their `__init__` methods. These are filtered out during dependency injection, so you can safely use them for other purposes without confusing FastAPI's dependency resolution.
+
 ## Advanced Usage
 
 ### Manual Registration
@@ -447,16 +463,28 @@ class B:
 container.resolve(A)
 ```
 
-#### Custom Container
+#### Custom Container & Testing
 
-You can create your own `Container` instance for isolation (e.g., for testing):
+You can create your own `Container` instance for isolation (e.g., for testing). The `Container` class is exported from the top-level package.
 
 ```python
-from fastapi_construct.container import Container
+from fastapi_construct import Container, ServiceLifetime
 
+# Create an isolated container
 my_container = Container()
-my_container.register(IService, ServiceImpl)
+my_container.register(IService, ServiceImpl, ServiceLifetime.SINGLETON)
 instance = my_container.resolve(IService)
+```
+
+**Resetting the Container:**
+
+For testing purposes, you might want to clear the global container's state between tests. You can use the `reset()` method:
+
+```python
+from fastapi_construct.container import default_container
+
+# In your test teardown
+default_container.reset()
 ```
 
 ## Best Practices

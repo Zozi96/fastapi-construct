@@ -38,6 +38,7 @@ class Container:
     def __init__(self):
         self._registry: dict[type[Any], DependencyConfig] = {}
         self._resolving: set[type[Any]] = set()
+        self._singletons: dict[type[Any], Any] = {}
 
     def register(
         self,
@@ -59,12 +60,7 @@ class Container:
         if not callable(provider):
             raise DependencyRegistrationError(f"Provider for {interface} must be callable.")
 
-        final_provider = provider
-
-        if lifetime == ServiceLifetime.SINGLETON and inspect.isclass(provider):
-            final_provider = _create_singleton_wrapper(provider)
-
-        self._registry[interface] = DependencyConfig(final_provider, lifetime)
+        self._registry[interface] = DependencyConfig(provider, lifetime)
 
     def get_config(self, interface: type[Any]) -> DependencyConfig | None:
         """
@@ -92,6 +88,10 @@ class Container:
             DependencyNotFoundError: If the dependency is not registered.
             CircularDependencyError: If a circular dependency is detected.
         """
+        # Check if it's a singleton we already have
+        if interface in self._singletons:
+            return self._singletons[interface]
+
         if interface in self._resolving:
             raise CircularDependencyError(f"Circular dependency detected for {interface}")
 
@@ -133,9 +133,22 @@ class Container:
                 # Let's try to resolve it anyway if it's a class, maybe it's a concrete class not registered?
                 # But we only resolve registered dependencies.
 
-            return provider(**kwargs)
+            instance = provider(**kwargs)
+
+            if config.lifetime == ServiceLifetime.SINGLETON:
+                self._singletons[interface] = instance
+
+            return instance
         finally:
             self._resolving.remove(interface)
+
+    def reset(self) -> None:
+        """
+        Resets the container, clearing all registrations and singletons.
+        """
+        self._registry.clear()
+        self._resolving.clear()
+        self._singletons.clear()
 
 
 # Global default container
