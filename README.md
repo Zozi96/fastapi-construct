@@ -614,6 +614,47 @@ class B:
 container.resolve(A)
 ```
 
+#### Common Errors & Solutions
+
+FastAPI Construct provides specific exceptions to help you identify and fix common dependency injection issues.
+
+**1. Interface Mismatch (`InterfaceMismatchError`)**
+
+Occurs when you inject an implementation class instead of the registered interface.
+
+```python
+@injectable(IUserService)
+class UserService(IUserService): ...
+
+# ❌ Wrong: Injecting implementation
+class UserController:
+    def __init__(self, service: UserService): ...
+
+# ✅ Correct: Injecting interface
+class UserController:
+    def __init__(self, service: IUserService): ...
+```
+
+**2. Captive Dependency (`CaptiveDependencyError`)**
+
+Occurs when you inject a `SCOPED` dependency (short-lived) into a `SINGLETON` service (long-lived). This is dangerous because the Singleton will hold onto the stale Scoped instance forever.
+
+```python
+@injectable(IUserService, lifetime=ServiceLifetime.SCOPED)
+class UserService(IUserService): ...
+
+# ❌ Wrong: Singleton depends on Scoped
+@injectable(IConfigService, lifetime=ServiceLifetime.SINGLETON)
+class ConfigService(IConfigService):
+    def __init__(self, user_service: IUserService): ...
+```
+
+**Solutions:**
+1. Change the Singleton service to be Scoped.
+2. Change the dependency to be Singleton (if stateless).
+3. Inject a factory or provider instead of the direct dependency.
+
+
 #### Custom Container & Testing
 
 You can create your own `Container` instance for isolation (e.g., for testing). The `Container` class is exported from the top-level package.

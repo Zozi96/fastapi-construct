@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 
 from fastapi_construct import container
+from fastapi_construct.exceptions import CaptiveDependencyError, InterfaceMismatchError
 from fastapi_construct.reflection import autowire_callable, resolve_dependency_for_param
 
 
@@ -367,3 +368,56 @@ class TestAutowireEdgeCases:
 
         assert unannotated_param.default is inspect.Parameter.empty
         assert annotated_param.default is not inspect.Parameter.empty
+
+
+class TestAutowireErrorHandling:
+    """Tests for error handling in autowiring."""
+
+    def test_autowire_raises_error_for_implementation_injection(self) -> None:
+        """Test that injecting an implementation instead of interface raises a helpful InterfaceMismatchError."""
+
+        class IService:
+            pass
+
+        class ServiceImpl:
+            pass
+
+        container.add_scoped(IService, ServiceImpl)
+
+        class WrongInjection:
+            def __init__(self, svc: ServiceImpl) -> None:
+                self.svc = svc
+
+        # Should raise InterfaceMismatchError with specific message
+        with pytest.raises(InterfaceMismatchError) as exc_info:
+            autowire_callable(WrongInjection.__init__)
+
+        error_msg = str(exc_info.value)
+        assert "WrongInjection.__init__" in error_msg
+        assert "Parameter 'svc' with type 'ServiceImpl'" in error_msg
+        assert "registered as 'IService'" in error_msg
+        assert "Change the type annotation" in error_msg
+
+    def test_autowire_raises_error_for_scoped_in_singleton(self) -> None:
+        """Test that injecting a Scoped dependency into a Singleton raises CaptiveDependencyError."""
+
+        class IScoped:
+            pass
+
+        class ScopedImpl:
+            pass
+
+        class SingletonService:
+            def __init__(self, scoped: IScoped) -> None:
+                self.scoped = scoped
+
+        container.add_scoped(IScoped, ScopedImpl)
+        # We don't register SingletonService yet because we want to test autowire_callable directly first
+        # or simulate what @injectable(ServiceLifetime.SINGLETON) does.
+
+        # Should raise CaptiveDependencyError
+        with pytest.raises(CaptiveDependencyError) as exc_info:
+            autowire_callable(SingletonService.__init__, owner_lifetime=container.ServiceLifetime.SINGLETON)
+
+        assert "Cannot inject Scoped dependency" in str(exc_info.value)
+        assert "into Singleton service" in str(exc_info.value)

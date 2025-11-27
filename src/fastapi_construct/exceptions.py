@@ -16,3 +16,15 @@ class DependencyRegistrationError(DependencyError):
 
 class CircularDependencyError(DependencyError):
     """Raised when a circular dependency is detected."""
+
+
+class AutowireError(DependencyError):
+    """Base exception for errors during autowiring."""
+
+
+class InterfaceMismatchError(AutowireError):
+    """Raised when an implementation is injected instead of its registered interface."""
+
+
+class CaptiveDependencyError(AutowireError):
+    """Raised when a Scoped dependency is injected into a Singleton service."""

@@ -72,7 +72,7 @@ def injectable(
 
         # Only autowire if __init__ is defined in the class (not inherited from object)
         if "__init__" in cls.__dict__:
-            autowire_callable(cls.__init__)
+            autowire_callable(cls.__init__, owner_lifetime=lifetime)
 
         return cls
 
@@ -171,20 +171,28 @@ def controller(router: APIRouter | None = None, **kwargs: Unpack[APIRouterArgs])
 
 
 def _create_get_instance[T](cls: type[T]) -> Callable[..., T]:
-    """Helper to create the get_instance dependency factory."""
+    """
+    Helper to create the get_instance dependency factory.
+
+    IMPORTANT: This should be called AFTER autowire_callable has been called on cls.__init__,
+    so that the Depends() defaults are already set on the parameters.
+    """
     if "__init__" in cls.__dict__:
 
-        def get_instance(**kwargs) -> T: # type: ignore
+        def get_instance(**kwargs) -> T:  # type: ignore
             return cls(**kwargs)
 
-        # Set signature for get_instance, excluding 'self' parameter and variadic args
+        # Get signature AFTER autowire_callable has modified it
+        # This ensures we preserve the Depends() defaults that autowire_callable added
         init_sig = inspect.signature(cls.__init__)
         init_params = [
             p
             for n, p in init_sig.parameters.items()
             if n != "self" and p.kind not in {inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD}
         ]
-        get_instance.__signature__ = init_sig.replace(parameters=init_params)  # type: ignore
+        # Remove return annotation to avoid conflicts with FastAPI's dependency resolution
+        # But keep the parameters as-is, including any Depends() defaults from autowire_callable
+        get_instance.__signature__ = init_sig.replace(parameters=init_params, return_annotation=inspect.Signature.empty)  # type: ignore
         return get_instance
 
     def get_instance():
@@ -193,7 +201,13 @@ def _create_get_instance[T](cls: type[T]) -> Callable[..., T]:
     return get_instance
 
 
-def _register_route(router: APIRouter, name: str, method: Callable[..., Any], get_instance: Callable[..., Any], controller_class: type | None = None):
+def _register_route(
+    router: APIRouter,
+    name: str,
+    method: Callable[..., Any],
+    get_instance: Callable[..., Any],
+    controller_class: type | None = None,
+):
     """Helper to register a single route with automatic inference of metadata."""
     metadata = method._route_metadata.copy()  # type: ignore
     sig = inspect.signature(method)
@@ -272,7 +286,10 @@ def _register_route(router: APIRouter, name: str, method: Callable[..., Any], ge
     )
 
     # Set signature with method params + hidden controller instance
-    endpoint_wrapper.__signature__ = sig.replace(parameters=[*params, controller_param])
+    # Remove return annotation to avoid conflicts with response_model in metadata
+    endpoint_wrapper.__signature__ = sig.replace(
+        parameters=[*params, controller_param], return_annotation=inspect.Signature.empty
+    )
 
     path = metadata.pop("path")
     method_verb = metadata.pop("method")
@@ -320,7 +337,17 @@ def _get_response_class_from_type(type_hint: Any) -> type[Response] | None:
     """
     # Check if it's a direct Response subclass
     if isinstance(type_hint, type) and issubclass(
-        type_hint, (Response, StarletteResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, FileResponse, StreamingResponse)
+        type_hint,
+        (
+            Response,
+            StarletteResponse,
+            HTMLResponse,
+            JSONResponse,
+            PlainTextResponse,
+            RedirectResponse,
+            FileResponse,
+            StreamingResponse,
+        ),
     ):
         return type_hint
 
@@ -329,9 +356,21 @@ def _get_response_class_from_type(type_hint: Any) -> type[Response] | None:
     if origin is not None:
         args = get_args(type_hint)
         response_classes = [
-            arg for arg in args
-            if isinstance(arg, type) and issubclass(
-                arg, (Response, StarletteResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, FileResponse, StreamingResponse)
+            arg
+            for arg in args
+            if isinstance(arg, type)
+            and issubclass(
+                arg,
+                (
+                    Response,
+                    StarletteResponse,
+                    HTMLResponse,
+                    JSONResponse,
+                    PlainTextResponse,
+                    RedirectResponse,
+                    FileResponse,
+                    StreamingResponse,
+                ),
             )
         ]
         if len(response_classes) == 1:
