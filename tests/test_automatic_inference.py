@@ -7,7 +7,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
 
-from fastapi_construct import controller, delete, get, post, put
+from fastapi_construct import controller, delete, get, post
 
 
 class UserResponse(BaseModel):
@@ -244,7 +244,7 @@ def test_all_inferences_together():
 
             Remove an item from the inventory.
             """
-            pass
+            return
 
     app = FastAPI()
     app.include_router(ItemController.router)
