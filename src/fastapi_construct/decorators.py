@@ -1,4 +1,5 @@
 import inspect
+from collections.abc import Callable
 from typing import Any, TypeVar, Unpack
 
 from fastapi import APIRouter, Depends, Response
@@ -13,7 +14,10 @@ from .types import APIRouterArgs
 T = TypeVar("T")
 
 
-def injectable[T](interface: type[T], lifetime: ServiceLifetime = ServiceLifetime.SCOPED):
+def injectable(
+    interface: type[Any] | ServiceLifetime | None = None,
+    lifetime: ServiceLifetime = ServiceLifetime.SCOPED,
+):
     """
     Decorator to register a class as an injectable dependency.
 
@@ -22,8 +26,10 @@ def injectable[T](interface: type[T], lifetime: ServiceLifetime = ServiceLifetim
     the class's `__init__` method to autowire its own dependencies.
 
     Args:
-        interface (Type[T]): The interface or base class that the decorated class implements.
-            This is the type used when requesting the dependency.
+        interface (Type[T] | ServiceLifetime | None): The interface or base class that the
+            decorated class implements. If None, the class itself is used as the interface.
+            If a ServiceLifetime is passed, it is treated as the lifetime argument, and
+            the class itself is used as the interface.
         lifetime (ServiceLifetime, optional): The lifetime of the service (e.g., SINGLETON,
             SCOPED, TRANSIENT). Defaults to ServiceLifetime.SCOPED.
 
@@ -31,6 +37,11 @@ def injectable[T](interface: type[T], lifetime: ServiceLifetime = ServiceLifetim
         Callable[[Type[T]], Type[T]]: A decorator function that returns the original class
         after registering it.
     """
+    # Handle case where decorator is called with just lifetime as first arg
+    # e.g. @injectable(ServiceLifetime.SINGLETON)
+    if isinstance(interface, ServiceLifetime):
+        lifetime = interface
+        interface = None
 
     def decorator(cls: type[T]) -> type[T]:
         """
@@ -46,7 +57,8 @@ def injectable[T](interface: type[T], lifetime: ServiceLifetime = ServiceLifetim
         Returns:
             Type[T]: The original class, unmodified but registered and configured for autowiring.
         """
-        register_dependency(interface, cls, lifetime)
+        register_interface = interface if interface is not None else cls
+        register_dependency(register_interface, cls, lifetime)
 
         # Only autowire if __init__ is defined in the class (not inherited from object)
         if "__init__" in cls.__dict__:
@@ -57,7 +69,7 @@ def injectable[T](interface: type[T], lifetime: ServiceLifetime = ServiceLifetim
     return decorator
 
 
-def controller(router: APIRouter | None = None, **kwargs: Unpack[APIRouterArgs]) -> Any:
+def controller(router: APIRouter | None = None, **kwargs: Unpack[APIRouterArgs]) -> Callable[[type[T]], type[T]]:
     """
     Decorator factory that converts a class into a FastAPI-style controller.
 
@@ -114,7 +126,7 @@ def controller(router: APIRouter | None = None, **kwargs: Unpack[APIRouterArgs])
                     # methods must be annotated with `_route_metadata` elsewhere
     """
 
-    def decorator(cls: type[Any]) -> type[Any]:
+    def decorator(cls: type[T]) -> type[T]:
         nonlocal router
         if router is None:
             router = APIRouter(**kwargs)
@@ -130,88 +142,106 @@ def controller(router: APIRouter | None = None, **kwargs: Unpack[APIRouterArgs])
         if "__init__" in cls.__dict__:
             autowire_callable(cls.__init__)
 
-            def get_instance(**kwargs):
-                return cls(**kwargs)
+        get_instance = _create_get_instance(cls)
 
-            # Set signature for get_instance, excluding 'self' parameter and variadic args
-            init_sig = inspect.signature(cls.__init__)
-            init_params = [
-                p
-                for n, p in init_sig.parameters.items()
-                if n != "self" and p.kind not in {inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD}
-            ]
-            get_instance.__signature__ = init_sig.replace(parameters=init_params)  # type: ignore
-        else:
+        members = inspect.getmembers(cls, predicate=inspect.isfunction)
+        # Sort by definition order (line number) to ensure routes are registered in the correct order
+        members.sort(key=lambda x: x[1].__code__.co_firstlineno)
 
-            def get_instance():
-                return cls()
-
-        for name, method in inspect.getmembers(cls, predicate=inspect.isfunction):
+        for name, method in members:
             if name.startswith("_"):
                 continue
 
             if hasattr(method, "_route_metadata"):
-                metadata = method._route_metadata.copy()  # type: ignore
-
-                # Check if return annotation contains Response and response_model is not set
-                if "response_model" not in metadata:
-                    return_annotation = inspect.signature(method).return_annotation
-                    if return_annotation is not inspect.Signature.empty:
-                        # Helper to check if a type is or contains Response
-                        def contains_response(type_hint: Any) -> bool:
-                            if type_hint is Response or type_hint is StarletteResponse:
-                                return True
-                            # Handle Union, Optional, etc.
-                            origin = getattr(type_hint, "__origin__", None)
-                            if origin:
-                                args = getattr(type_hint, "__args__", ())
-                                return any(contains_response(arg) for arg in args)
-                            return False
-
-                        if contains_response(return_annotation):
-                            metadata["response_model"] = None
-
-                # Create a factory function to capture the current method name in the closure
-                def make_endpoint(method_name: str):
-                    async def endpoint_wrapper(
-                        **endpoint_kwargs,
-                    ):
-                        # Get controller instance from Depends
-                        _controller_instance = endpoint_kwargs.pop("_controller_instance")
-                        method_to_call = getattr(_controller_instance, method_name)
-                        if inspect.iscoroutinefunction(method_to_call):
-                            return await method_to_call(**endpoint_kwargs)
-                        return method_to_call(**endpoint_kwargs)
-
-                    return endpoint_wrapper  # noqa: B023
-
-                endpoint_wrapper = make_endpoint(name)
-                endpoint_wrapper.__name__ = name
-                endpoint_wrapper.__doc__ = method.__doc__
-
-                sig = inspect.signature(method)
-                # Skip 'self' parameter
-                params_list = list(sig.parameters.items())
-                params = [p for n, p in params_list if n != "self"]
-
-                # Add controller instance parameter with include_in_schema=False
-                controller_param = inspect.Parameter(
-                    "_controller_instance",
-                    inspect.Parameter.KEYWORD_ONLY,
-                    default=Depends(get_instance),
-                )
-
-                # Set signature with method params + hidden controller instance
-                endpoint_wrapper.__signature__ = sig.replace(parameters=[*params, controller_param])
-
-                path = metadata.pop("path")
-                method_verb = metadata.pop("method")
-
-                router.add_api_route(path, endpoint_wrapper, methods=[method_verb], **metadata)
+                _register_route(router, name, method, get_instance)
 
         return cls
 
     return decorator
+
+
+def _create_get_instance[T](cls: type[T]) -> Callable[..., T]:
+    """Helper to create the get_instance dependency factory."""
+    if "__init__" in cls.__dict__:
+
+        def get_instance(**kwargs):
+            return cls(**kwargs)
+
+        # Set signature for get_instance, excluding 'self' parameter and variadic args
+        init_sig = inspect.signature(cls.__init__)
+        init_params = [
+            p
+            for n, p in init_sig.parameters.items()
+            if n != "self" and p.kind not in {inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD}
+        ]
+        get_instance.__signature__ = init_sig.replace(parameters=init_params)  # type: ignore
+        return get_instance
+
+    def get_instance():
+        return cls()
+
+    return get_instance
+
+
+def _register_route(router: APIRouter, name: str, method: Callable[..., Any], get_instance: Callable[..., Any]):
+    """Helper to register a single route."""
+    metadata = method._route_metadata.copy()  # type: ignore
+
+    # Check if return annotation contains Response and response_model is not set
+    if "response_model" not in metadata:
+        return_annotation = inspect.signature(method).return_annotation
+        if return_annotation is not inspect.Signature.empty and _contains_response(return_annotation):
+            metadata["response_model"] = None
+
+    # Create a factory function to capture the current method name in the closure
+    def make_endpoint(method_name: str):
+        async def endpoint_wrapper(
+            **endpoint_kwargs,
+        ):
+            # Get controller instance from Depends
+            _controller_instance = endpoint_kwargs.pop("_controller_instance")
+            method_to_call = getattr(_controller_instance, method_name)
+            if inspect.iscoroutinefunction(method_to_call):
+                return await method_to_call(**endpoint_kwargs)
+            return method_to_call(**endpoint_kwargs)
+
+        return endpoint_wrapper
+
+    endpoint_wrapper = make_endpoint(name)
+    endpoint_wrapper.__name__ = name
+    endpoint_wrapper.__doc__ = method.__doc__
+
+    sig = inspect.signature(method)
+    # Skip 'self' parameter
+    params_list = list(sig.parameters.items())
+    params = [p for n, p in params_list if n != "self"]
+
+    # Add controller instance parameter with include_in_schema=False
+    controller_param = inspect.Parameter(
+        "_controller_instance",
+        inspect.Parameter.KEYWORD_ONLY,
+        default=Depends(get_instance),
+    )
+
+    # Set signature with method params + hidden controller instance
+    endpoint_wrapper.__signature__ = sig.replace(parameters=[*params, controller_param])
+
+    path = metadata.pop("path")
+    method_verb = metadata.pop("method")
+
+    router.add_api_route(path, endpoint_wrapper, methods=[method_verb], **metadata)
+
+
+def _contains_response(type_hint: Any) -> bool:
+    """Helper to check if a type is or contains Response."""
+    if type_hint is Response or type_hint is StarletteResponse:
+        return True
+    # Handle Union, Optional, etc.
+    origin = getattr(type_hint, "__origin__", None)
+    if origin:
+        args = getattr(type_hint, "__args__", ())
+        return any(_contains_response(arg) for arg in args)
+    return False
 
 
 inject = autowire_callable

@@ -1,8 +1,9 @@
 """Example FastAPI application using fastapi-construct."""
+
 from abc import ABC, abstractmethod
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 from fastapi_construct import ServiceLifetime, controller, delete, get, injectable, patch, post, put
@@ -121,11 +122,23 @@ class ItemService(IItemService):
         return False
 
 
+@injectable()
+class SelfBoundService:
+    def get_info(self) -> str:
+        return "I am a self-bound service!"
+
+
 # Controller
 @controller(prefix="/api/items", tags=["Items"])
 class ItemController:
-    def __init__(self, item_service: IItemService):
+    def __init__(self, item_service: IItemService, self_bound: SelfBoundService):
         self.item_service = item_service
+        self.self_bound = self_bound
+
+    @get("/self-bound-test")
+    def test_self_bound(self):
+        """Test self-bound service injection."""
+        return {"message": self.self_bound.get_info()}
 
     @get(
         "/",
@@ -147,7 +160,7 @@ class ItemController:
         """Get a specific item by ID."""
         item = self.item_service.get_by_id(item_id)
         if not item:
-            return {"error": "Item not found"}, 404
+            raise HTTPException(status_code=404, detail="Item not found")
         return item
 
     @post(
@@ -171,7 +184,7 @@ class ItemController:
         """Update an existing item (full update)."""
         updated = self.item_service.update(item_id, item)
         if not updated:
-            return {"error": "Item not found"}, 404
+            raise HTTPException(status_code=404, detail="Item not found")
         return updated
 
     @patch(
@@ -184,7 +197,7 @@ class ItemController:
         """Partially update an item."""
         updated = self.item_service.partial_update(item_id, item)
         if not updated:
-            return {"error": "Item not found"}, 404
+            raise HTTPException(status_code=404, detail="Item not found")
         return updated
 
     @delete(
@@ -197,8 +210,7 @@ class ItemController:
         """Delete an item."""
         deleted = self.item_service.delete(item_id)
         if not deleted:
-            return {"error": "Item not found"}, 404
-        return None
+            raise HTTPException(status_code=404, detail="Item not found")
 
 
 # Create FastAPI app

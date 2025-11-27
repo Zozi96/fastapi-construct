@@ -22,6 +22,7 @@ def route(path: str, method: str, **kwargs: Unpack[APIMethodArgs]) -> Callable:
         Callable: A decorator that modifies the target function by attaching a
         `_route_metadata` attribute containing the route configuration.
     """
+
     def decorator(func: Callable) -> Callable:
         func._route_metadata = {  # type: ignore
             "path": path,

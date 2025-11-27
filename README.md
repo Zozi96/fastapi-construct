@@ -16,6 +16,7 @@ FastAPI Construct brings the elegant patterns of NestJS and ASP.NET Core to Fast
 - **Function injection** with `@inject` decorator for regular functions and endpoints
 - **Service lifecycles** (Scoped, Transient, Singleton) for fine-grained control
 - **Auto-wiring** of dependencies by type
+- **Strict Typing** with full support for Python 3.12+ generics
 
 ## Table of Contents
 
@@ -196,6 +197,18 @@ class UserService(IUserService):
         # Create user logic
         self.email_service.send_email(email, "Welcome", "Thanks for joining!")
         return {"email": email}
+```
+
+You can also register a class as its own dependency (self-binding) without an interface:
+
+```python
+@injectable()
+class HelperService:
+    def help(self): ...
+
+@injectable(ServiceLifetime.SINGLETON)
+class ConfigService:
+    def __init__(self): ...
 ```
 
 ### Function Injection
@@ -633,15 +646,23 @@ class ProductService(IProductService):
     async def delete_product(self, product_id: int) -> None:
         self.products.pop(product_id, None)
 
+# Self-binding service (no interface)
+@injectable()
+class AnalyticsService:
+    def track(self, event: str):
+        print(f"Tracking event: {event}")
+
 # Controller
 @controller(prefix="/api/products", tags=["products"])
 class ProductController:
-    def __init__(self, service: IProductService):
+    def __init__(self, service: IProductService, analytics: AnalyticsService):
         self.service = service
+        self.analytics = analytics
 
     @get("/")
     async def list_products(self):
         """List all products."""
+        self.analytics.track("list_products")
         return await self.service.list_products()
 
     @get("/{product_id}")

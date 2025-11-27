@@ -53,7 +53,7 @@ def greet_endpoint(name: str, message: str = Depends(get_greeting)):
     The get_greeting function has IGreetingService automatically injected,
     and we use it as a dependency here with Depends().
     """
-    return {"message": message}
+    return {"message": message, "user": name}
 
 
 if __name__ == "__main__":

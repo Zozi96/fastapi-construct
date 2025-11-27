@@ -1,24 +1,21 @@
 import inspect
 from collections.abc import Callable
 from functools import lru_cache
-from typing import Any, TypeVar
+from typing import Any
 
 from .enums import ServiceLifetime
 from .exceptions import CircularDependencyError, DependencyNotFoundError, DependencyRegistrationError
 
 
-T = TypeVar("T")
-
-
-class DependencyConfig:
-    def __init__(self, provider: Callable, lifetime: ServiceLifetime) -> None:
+class DependencyConfig[T]:
+    def __init__(self, provider: Callable[..., T], lifetime: ServiceLifetime) -> None:
         self.provider = provider
         self.lifetime = lifetime
 
 
-def _create_singleton_wrapper(cls: type[Any]) -> Callable:
+def _create_singleton_wrapper[T](cls: type[T]) -> Callable[..., T]:
     @lru_cache(maxsize=1)
-    def singleton_factory(*args, **kwargs):
+    def singleton_factory(*args, **kwargs) -> T:
         return cls(*args, **kwargs)
 
     old_sig = inspect.signature(cls.__init__)
@@ -36,14 +33,14 @@ class Container:
     """
 
     def __init__(self):
-        self._registry: dict[type[Any], DependencyConfig] = {}
-        self._resolving: set[type[Any]] = set()
-        self._singletons: dict[type[Any], Any] = {}
+        self._registry: dict[type, DependencyConfig] = {}
+        self._resolving: set[type] = set()
+        self._singletons: dict[type, Any] = {}
 
-    def register(
+    def register[T](
         self,
-        interface: type[Any],
-        provider: Callable,
+        interface: type[T],
+        provider: Callable[..., T],
         lifetime: ServiceLifetime = ServiceLifetime.SCOPED,
     ) -> None:
         """
@@ -62,7 +59,7 @@ class Container:
 
         self._registry[interface] = DependencyConfig(provider, lifetime)
 
-    def get_config(self, interface: type[Any]) -> DependencyConfig | None:
+    def get_config[T](self, interface: type[T]) -> DependencyConfig[T] | None:
         """
         Retrieves the dependency configuration for a given interface.
 
@@ -72,9 +69,9 @@ class Container:
         Returns:
             The configuration if found, None otherwise.
         """
-        return self._registry.get(interface)
+        return self._registry.get(interface)  # type: ignore
 
-    def resolve(self, interface: type[T]) -> T:
+    def resolve[T](self, interface: type[T]) -> T:
         """
         Resolves a dependency recursively.
 
@@ -88,16 +85,16 @@ class Container:
             DependencyNotFoundError: If the dependency is not registered.
             CircularDependencyError: If a circular dependency is detected.
         """
-        # Check if it's a singleton we already have
-        if interface in self._singletons:
-            return self._singletons[interface]
-
         if interface in self._resolving:
             raise CircularDependencyError(f"Circular dependency detected for {interface}")
 
         config = self.get_config(interface)
         if not config:
             raise DependencyNotFoundError(f"No provider registered for {interface}")
+
+        # If it's a singleton and we already have an instance, return it
+        if config.lifetime == ServiceLifetime.SINGLETON and interface in self._singletons:
+            return self._singletons[interface]  # type: ignore
 
         self._resolving.add(interface)
         try:
@@ -122,16 +119,8 @@ class Container:
 
                 # If not a dependency, check for default value
                 if param.default != inspect.Parameter.empty:
-                    # If default is a Depends object (from autowiring), we might want to resolve it?
-                    # But for manual resolution, we usually rely on type hints.
-                    # If we can't resolve it and there is a default, use the default.
                     kwargs[name] = param.default
                     continue
-
-                # If we can't resolve and no default, we can't proceed (unless we want to pass None?)
-                # For now, let it fail at call time or raise here.
-                # Let's try to resolve it anyway if it's a class, maybe it's a concrete class not registered?
-                # But we only resolve registered dependencies.
 
             instance = provider(**kwargs)
 
@@ -144,49 +133,62 @@ class Container:
 
     def reset(self) -> None:
         """
-        Resets the container, clearing all registrations and singletons.
+        Reset the container state, clearing all singletons and registry.
+        Useful for testing.
         """
         self._registry.clear()
         self._resolving.clear()
         self._singletons.clear()
+
+    def get_singleton[T](self, interface: type[T]) -> T | None:
+        """
+        Retrieve a singleton instance if it exists.
+        """
+        return self._singletons.get(interface)
+
+    def set_singleton[T](self, interface: type[T], instance: T) -> None:
+        """
+        Register a singleton instance.
+        """
+        self._singletons[interface] = instance
 
 
 # Global default container
 default_container = Container()
 
 
-def register_dependency(
-    interface: type[Any], provider: Callable, lifetime: ServiceLifetime = ServiceLifetime.SCOPED
+def register_dependency[T](
+    interface: type[T], provider: Callable[..., T], lifetime: ServiceLifetime = ServiceLifetime.SCOPED
 ) -> None:
     """
-    Registers a dependency provider in the default container.
+    Register a dependency in the default container.
     """
     default_container.register(interface, provider, lifetime)
 
 
-def get_dependency_config(interface: type[Any]) -> DependencyConfig | None:
+def get_dependency_config[T](interface: type[T]) -> DependencyConfig[T] | None:
     """
-    Retrieves dependency configuration from the default container.
+    Get the configuration for a dependency from the default container.
     """
     return default_container.get_config(interface)
 
 
-def add_transient(interface: type[Any], provider: Callable) -> None:
+def add_transient[T](interface: type[T], provider: Callable[..., T]) -> None:
     """
-    Registers a transient dependency in the default container.
+    Register a transient dependency.
     """
-    default_container.register(interface, provider, ServiceLifetime.TRANSIENT)
+    register_dependency(interface, provider, ServiceLifetime.TRANSIENT)
 
 
-def add_scoped(interface: type[Any], provider: Callable) -> None:
+def add_scoped[T](interface: type[T], provider: Callable[..., T]) -> None:
     """
-    Registers a scoped dependency in the default container.
+    Register a scoped dependency.
     """
-    default_container.register(interface, provider, ServiceLifetime.SCOPED)
+    register_dependency(interface, provider, ServiceLifetime.SCOPED)
 
 
-def add_singleton(interface: type[Any], provider: Callable) -> None:
+def add_singleton[T](interface: type[T], provider: Callable[..., T]) -> None:
     """
-    Registers a singleton dependency in the default container.
+    Register a singleton dependency.
     """
-    default_container.register(interface, provider, ServiceLifetime.SINGLETON)
+    register_dependency(interface, provider, ServiceLifetime.SINGLETON)

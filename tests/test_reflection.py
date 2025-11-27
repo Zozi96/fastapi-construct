@@ -309,7 +309,8 @@ class TestAutowireCallable:
         # All should have Depends, but with different use_cache settings
         assert t_param.default.use_cache is False  # Transient
         assert s_param.default.use_cache is True  # Scoped
-        assert si_param.default.use_cache is True  # Singleton
+        # Singleton uses a proxy with internal caching, so FastAPI cache is disabled
+        assert si_param.default.use_cache is False
 
 
 class TestAutowireEdgeCases:

@@ -4,11 +4,11 @@ from typing import Any
 
 from fastapi import Depends
 
-from .container import get_dependency_config
+from .container import default_container, get_dependency_config
 from .enums import ServiceLifetime
 
 
-def autowire_callable(func: Callable) -> Callable:
+def autowire_callable[F: Callable[..., Any]](func: F) -> F:
     """
     Inspects the signature of a callable and injects FastAPI dependencies based on type hints.
 
@@ -39,14 +39,49 @@ def autowire_callable(func: Callable) -> Callable:
             config = get_dependency_config(param.annotation)
 
             if config:
-                use_cache = config.lifetime != ServiceLifetime.TRANSIENT
-                new_params.append(param.replace(default=Depends(config.provider, use_cache=use_cache)))
+                if config.lifetime == ServiceLifetime.SINGLETON:
+                    # For Singletons, we need a proxy that checks the container for an existing instance
+                    # because FastAPI's use_cache=True is only request-scoped.
+                    proxy = _create_singleton_proxy(config.provider, param.annotation)
+                    new_params.append(param.replace(default=Depends(proxy, use_cache=False)))
+                else:
+                    use_cache = config.lifetime != ServiceLifetime.TRANSIENT
+                    new_params.append(param.replace(default=Depends(config.provider, use_cache=use_cache)))
                 continue
 
         new_params.append(param)
 
     func.__signature__ = sig.replace(parameters=new_params)  # type: ignore
     return func
+
+
+def _create_singleton_proxy(provider: Callable[..., Any], interface: type[Any]) -> Callable[..., Any]:
+    """
+    Creates a proxy function for Singleton dependencies.
+
+    This proxy checks the container for an existing instance before creating a new one.
+    It mimics the signature of the provider so FastAPI can inject dependencies into it.
+    """
+
+    def proxy(**kwargs):
+        instance = default_container.get_singleton(interface)
+        if instance is not None:
+            return instance
+
+        instance = provider(**kwargs)
+        default_container.set_singleton(interface, instance)
+        return instance
+
+    # Copy signature from provider
+    if inspect.isclass(provider):
+        init_sig = inspect.signature(provider.__init__)
+        # Remove self
+        params = [p for n, p in init_sig.parameters.items() if n != "self"]
+        proxy.__signature__ = init_sig.replace(parameters=params)  # type: ignore
+    else:
+        proxy.__signature__ = inspect.signature(provider)  # type: ignore
+
+    return proxy
 
 
 def resolve_dependency_for_param(annotation: Any) -> Any:
