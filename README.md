@@ -13,6 +13,7 @@ FastAPI Construct brings the elegant patterns of NestJS and ASP.NET Core to Fast
 
 - **Class-based controllers** with clean route grouping
 - **Constructor dependency injection** using Python type hints (no `Depends()` boilerplate)
+- **Automatic metadata inference** - response models, status codes, OpenAPI docs from type hints and docstrings
 - **Function injection** with `@inject` decorator for regular functions and endpoints
 - **Service lifecycles** (Scoped, Transient, Singleton) for fine-grained control
 - **Auto-wiring** of dependencies by type
@@ -29,11 +30,13 @@ FastAPI Construct brings the elegant patterns of NestJS and ASP.NET Core to Fast
   - [Service Lifecycles](#service-lifecycles)
   - [Class-based Controllers](#class-based-controllers)
   - [HTTP Method Decorators](#http-method-decorators)
+  - [Automatic Metadata Inference](#automatic-metadata-inference)
 - [Advanced Usage](#advanced-usage)
   - [Manual Registration](#manual-registration)
   - [Nested Dependencies](#nested-dependencies)
   - [Multiple Controllers](#multiple-controllers)
 - [Best Practices](#best-practices)
+- [Backward Compatibility](#backward-compatibility)
 - [Examples](#examples)
 - [Contributing](#contributing)
 - [License](#license)
@@ -346,16 +349,151 @@ async def get_user(self, user_id: int):
     return await self.service.get_user(user_id)
 ```
 
-#### Automatic Response Model Handling
+### Automatic Metadata Inference
 
-If your controller method returns a `fastapi.Response` object (or subclass), `fastapi-construct` automatically sets `response_model=None` for that route. This prevents validation errors and allows you to return raw responses easily.
+`fastapi-construct` automatically infers various metadata from your code, reducing boilerplate and keeping your controllers clean. All automatic inference can be overridden by specifying values explicitly.
+
+#### Response Model Inference
+
+**Automatic inference from type annotations:**
 
 ```python
-from fastapi import Response
+from pydantic import BaseModel
 
-@get("/raw")
-def raw_response(self) -> Response:
-    return Response(content="raw data", media_type="text/plain")
+class UserResponse(BaseModel):
+    id: int
+    name: str
+
+@controller(prefix="/users")
+class UserController:
+    @get("/{user_id}")
+    async def get_user(self, user_id: int) -> UserResponse:
+        # response_model=UserResponse is automatically inferred
+        return UserResponse(id=user_id, name="John")
+
+    @get("/raw")
+    def get_raw(self) -> Response:
+        # response_model=None is automatically set for Response types
+        return Response(content="raw", media_type="text/plain")
+```
+
+**Explicit override:**
+
+```python
+@get("/user", response_model=UserPublicResponse)
+async def get_user(self) -> UserResponse:
+    # UserPublicResponse (explicit) takes precedence over inferred UserResponse
+    return await self.service.get_user()
+```
+
+#### Status Code Inference
+
+Status codes are automatically inferred based on HTTP method and return type:
+
+```python
+@controller(prefix="/items")
+class ItemController:
+    @post("/")
+    def create_item(self) -> ItemResponse:
+        # status_code=201 is automatically inferred for POST
+        return ItemResponse(id=1, name="Item")
+
+    @delete("/{item_id}")
+    def delete_item(self, item_id: int) -> None:
+        # status_code=204 is automatically inferred for DELETE with no return
+        self.service.delete(item_id)
+
+    @get("/{item_id}")
+    def get_item(self, item_id: int) -> ItemResponse:
+        # status_code=200 (FastAPI default) for GET
+        return self.service.get(item_id)
+```
+
+#### Summary and Description from Docstrings
+
+Documentation is automatically extracted from method docstrings:
+
+```python
+@controller(prefix="/users")
+class UserController:
+    @get("/{user_id}")
+    def get_user(self, user_id: int) -> UserResponse:
+        """Get a user by ID.
+
+        Retrieve detailed information about a specific user
+        from the database using their unique identifier.
+        """
+        return self.service.get_user(user_id)
+
+    # OpenAPI will show:
+    # summary: "Get a user by ID."
+    # description: "Retrieve detailed information about a specific user..."
+```
+
+#### Operation ID Generation
+
+Unique operation IDs are generated automatically from controller and method names:
+
+```python
+@controller(prefix="/users")
+class UserController:
+    @get("/{user_id}")
+    def get_user_by_id(self, user_id: int) -> UserResponse:
+        # operation_id: "user_get_user_by_id"
+        return self.service.get_user(user_id)
+
+@controller(prefix="/items")
+class ItemManagementController:
+    @post("/")
+    def create_new_item(self) -> ItemResponse:
+        # operation_id: "item_management_create_new_item"
+        return self.service.create_item()
+```
+
+#### Consistency Validation
+
+The library validates that explicit `response_model` matches your return type annotation and warns about inconsistencies:
+
+```python
+@get("/user", response_model=UserResponse)
+def get_item(self) -> ItemResponse:  # ⚠️ Warning: Inconsistent types!
+    # UserWarning: Inconsistent response_model in get_item...
+    return ItemResponse(id=1)
+```
+
+#### Combined Example
+
+All automatic inferences work together seamlessly:
+
+```python
+@controller(prefix="/products")
+class ProductController:
+    def __init__(self, service: IProductService):
+        self.service = service
+
+    @post("/")
+    def create_product(self, name: str, price: float) -> ProductResponse:
+        """Create a new product.
+
+        Add a new product to the catalog with the given name and price.
+        Products must have unique names within their category.
+        """
+        # Automatically inferred:
+        # - response_model=ProductResponse (from return type)
+        # - status_code=201 (POST with return value)
+        # - summary="Create a new product." (first line of docstring)
+        # - description="Add a new product to the catalog..." (rest of docstring)
+        # - operation_id="product_create_product" (from class and method name)
+        return self.service.create(name, price)
+
+    @delete("/{product_id}")
+    def delete_product(self, product_id: int) -> None:
+        """Delete a product from the catalog."""
+        # Automatically inferred:
+        # - status_code=204 (DELETE with no return)
+        # - summary="Delete a product from the catalog."
+        # - operation_id="product_delete_product"
+        self.service.delete(product_id)
 ```
 
 #### Variadic Arguments
@@ -575,6 +713,46 @@ src/
 │   └── models.py
 └── main.py
 ```
+
+## Backward Compatibility
+
+**All automatic inference features are 100% backward compatible.** Existing code continues to work without modification.
+
+### Compatibility Guarantees
+
+1. **Explicit parameters always win** - Any explicitly provided parameter takes precedence over automatic inference
+2. **No type annotations = no inference** - Code without type annotations works exactly as before
+3. **Opt-in through type hints** - All new features are activated only when you add type annotations
+
+### Examples
+
+```python
+# Existing code - works unchanged
+@post("/items", response_model=ItemResponse, status_code=201)
+def create_item(self):
+    return self.service.create_item()
+
+# New code with inference - also works
+@post("/items")
+def create_item(self) -> ItemResponse:
+    """Create a new item."""
+    return self.service.create_item()
+
+# Mixed - explicit overrides inferred
+@post("/items", status_code=200)  # Explicit 200, not inferred 201
+def create_item(self) -> ItemResponse:
+    return self.service.create_item()
+```
+
+### Migration Path
+
+No migration needed! To adopt new features gradually:
+
+1. **Add type annotations** (optional) - Enables automatic inference
+2. **Remove redundant parameters** (optional) - Cleaner code
+3. **Add docstrings** (optional) - Better OpenAPI docs
+
+All changes are **opt-in** and **reversible** by adding explicit parameters.
 
 ## Examples
 

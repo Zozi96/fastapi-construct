@@ -1,8 +1,18 @@
 import inspect
+import re
+import warnings
 from collections.abc import Callable
-from typing import Any, TypeVar, Unpack
+from typing import Any, TypeVar, Unpack, get_args, get_origin
 
 from fastapi import APIRouter, Depends, Response
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    JSONResponse,
+    PlainTextResponse,
+    RedirectResponse,
+    StreamingResponse,
+)
 from starlette.responses import Response as StarletteResponse
 
 from .container import register_dependency
@@ -153,7 +163,7 @@ def controller(router: APIRouter | None = None, **kwargs: Unpack[APIRouterArgs])
                 continue
 
             if hasattr(method, "_route_metadata"):
-                _register_route(router, name, method, get_instance)
+                _register_route(router, name, method, get_instance, controller_class=cls)
 
         return cls
 
@@ -164,7 +174,7 @@ def _create_get_instance[T](cls: type[T]) -> Callable[..., T]:
     """Helper to create the get_instance dependency factory."""
     if "__init__" in cls.__dict__:
 
-        def get_instance(**kwargs):
+        def get_instance(**kwargs) -> T: # type: ignore
             return cls(**kwargs)
 
         # Set signature for get_instance, excluding 'self' parameter and variadic args
@@ -183,15 +193,53 @@ def _create_get_instance[T](cls: type[T]) -> Callable[..., T]:
     return get_instance
 
 
-def _register_route(router: APIRouter, name: str, method: Callable[..., Any], get_instance: Callable[..., Any]):
-    """Helper to register a single route."""
+def _register_route(router: APIRouter, name: str, method: Callable[..., Any], get_instance: Callable[..., Any], controller_class: type | None = None):
+    """Helper to register a single route with automatic inference of metadata."""
     metadata = method._route_metadata.copy()  # type: ignore
+    sig = inspect.signature(method)
+    return_annotation = sig.return_annotation
 
-    # Check if return annotation contains Response and response_model is not set
-    if "response_model" not in metadata:
-        return_annotation = inspect.signature(method).return_annotation
-        if return_annotation is not inspect.Signature.empty and _contains_response(return_annotation):
+    # 1. Validate response_model consistency if explicitly set
+    _validate_response_model_consistency(method, metadata)
+
+    # 2. Infer response_model from return annotation if not explicitly set
+    if "response_model" not in metadata and return_annotation is not inspect.Signature.empty:
+        if _contains_response(return_annotation):
+            # If return type contains Response, disable response_model
             metadata["response_model"] = None
+        else:
+            # Otherwise, use the return annotation as response_model
+            metadata["response_model"] = return_annotation
+
+    # 3. Infer response_class from return type if not explicitly set
+    # Only infer if response_model is not disabled (i.e., not None)
+    if (
+        "response_class" not in metadata
+        and return_annotation is not inspect.Signature.empty
+        and metadata.get("response_model") is not None
+    ):
+        response_class = _get_response_class_from_type(return_annotation)
+        if response_class:
+            metadata["response_class"] = response_class
+
+    # 4. Infer summary and description from docstring if not explicitly set
+    if "summary" not in metadata or "description" not in metadata:
+        summary, description = _parse_docstring(method)
+        if "summary" not in metadata and summary:
+            metadata["summary"] = summary
+        if "description" not in metadata and description:
+            metadata["description"] = description
+
+    # 5. Infer status_code based on HTTP method and return type if not explicitly set
+    method_verb = metadata.get("method", "GET")
+    if "status_code" not in metadata:
+        inferred_status = _infer_status_code(method_verb, return_annotation)
+        if inferred_status:
+            metadata["status_code"] = inferred_status
+
+    # 6. Generate operation_id if not explicitly set
+    if "operation_id" not in metadata and controller_class:
+        metadata["operation_id"] = _generate_operation_id(controller_class.__name__, name)
 
     # Create a factory function to capture the current method name in the closure
     def make_endpoint(method_name: str):
@@ -233,15 +281,164 @@ def _register_route(router: APIRouter, name: str, method: Callable[..., Any], ge
 
 
 def _contains_response(type_hint: Any) -> bool:
-    """Helper to check if a type is or contains Response."""
-    if type_hint is Response or type_hint is StarletteResponse:
-        return True
+    """Helper to check if a type is or contains any Response class."""
+    # Check if it's any Response class
+    try:
+        if isinstance(type_hint, type) and issubclass(
+            type_hint,
+            (
+                Response,
+                StarletteResponse,
+                HTMLResponse,
+                JSONResponse,
+                PlainTextResponse,
+                RedirectResponse,
+                FileResponse,
+                StreamingResponse,
+            ),
+        ):
+            return True
+    except TypeError:
+        # Handle cases where issubclass can't be used
+        pass
+
     # Handle Union, Optional, etc.
     origin = getattr(type_hint, "__origin__", None)
     if origin:
         args = getattr(type_hint, "__args__", ())
         return any(_contains_response(arg) for arg in args)
     return False
+
+
+def _get_response_class_from_type(type_hint: Any) -> type[Response] | None:
+    """
+    Extract response class from type annotation if it's a Response subclass.
+
+    Note: This function is currently not used because Response classes
+    should have response_model=None, which is handled by _contains_response().
+    Keeping for potential future use.
+    """
+    # Check if it's a direct Response subclass
+    if isinstance(type_hint, type) and issubclass(
+        type_hint, (Response, StarletteResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, FileResponse, StreamingResponse)
+    ):
+        return type_hint
+
+    # Handle Union types - check if all non-None types are the same Response class
+    origin = get_origin(type_hint)
+    if origin is not None:
+        args = get_args(type_hint)
+        response_classes = [
+            arg for arg in args
+            if isinstance(arg, type) and issubclass(
+                arg, (Response, StarletteResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, FileResponse, StreamingResponse)
+            )
+        ]
+        if len(response_classes) == 1:
+            return response_classes[0]
+
+    return None
+
+
+def _parse_docstring(func: Callable) -> tuple[str | None, str | None]:
+    """
+    Parse a function's docstring to extract summary and description.
+
+    Returns:
+        tuple: (summary, description) where summary is the first line and description is the rest
+    """
+    if not func.__doc__:
+        return None, None
+
+    lines = func.__doc__.strip().split("\n")
+    if not lines:
+        return None, None
+
+    # First non-empty line is the summary
+    summary = lines[0].strip()
+
+    # Rest is the description (skip empty lines at the beginning)
+    description_lines = []
+    for line in lines[1:]:
+        stripped = line.strip()
+        if stripped or description_lines:  # Start collecting after first non-empty line
+            description_lines.append(stripped)
+
+    description = "\n".join(description_lines).strip() if description_lines else None
+
+    return summary or None, description or None
+
+
+def _infer_status_code(method_verb: str, return_annotation: Any) -> int | None:
+    """
+    Infer the appropriate status code based on HTTP method and return type.
+
+    Returns None if no inference can be made (use FastAPI default).
+    """
+    # For POST, infer 201 if it returns something
+    if method_verb == "POST" and return_annotation is not inspect.Signature.empty and return_annotation is not None:
+        return 201
+
+    # For DELETE, infer 204 if it returns None or has no return annotation
+    if method_verb == "DELETE":
+        if return_annotation is None or return_annotation is type(None):
+            return 204
+        # Check for Optional[None] or None in Union
+        origin = get_origin(return_annotation)
+        if origin is not None:
+            args = get_args(return_annotation)
+            # If all args are None, it's effectively None
+            if all(arg is type(None) for arg in args):
+                return 204
+
+    return None
+
+
+def _validate_response_model_consistency(method: Callable, metadata: dict) -> None:
+    """
+    Validate that explicit response_model is consistent with return type annotation.
+
+    Emits a warning if there's an inconsistency.
+    """
+    if "response_model" not in metadata:
+        return
+
+    explicit_model = metadata["response_model"]
+    return_annotation = inspect.signature(method).return_annotation
+
+    # Skip validation if no return annotation or if response_model is None
+    if return_annotation is inspect.Signature.empty or explicit_model is None:
+        return
+
+    # Skip if return annotation contains Response (handled separately)
+    if _contains_response(return_annotation):
+        return
+
+    # Check for inconsistency
+    if explicit_model != return_annotation:
+        warnings.warn(
+            f"Inconsistent response_model in {method.__name__}: "
+            f"explicit response_model={explicit_model.__name__ if hasattr(explicit_model, '__name__') else explicit_model} "
+            f"but return annotation is {return_annotation.__name__ if hasattr(return_annotation, '__name__') else return_annotation}. "
+            f"The explicit response_model will be used.",
+            UserWarning,
+            stacklevel=4,
+        )
+
+
+def _generate_operation_id(controller_name: str, method_name: str) -> str:
+    """
+    Generate a unique operation ID from controller and method names.
+
+    Example: UserController.get_user -> "user_get_user"
+    """
+    # Remove "Controller" suffix if present
+    clean_controller = controller_name.replace("Controller", "")
+
+    # Convert CamelCase to snake_case
+    clean_controller = re.sub(r"(?<!^)(?=[A-Z])", "_", clean_controller).lower()
+
+    return f"{clean_controller}_{method_name}"
 
 
 inject = autowire_callable
