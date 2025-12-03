@@ -38,7 +38,9 @@ class TestResolveDependencyForParam:
         # Should return a FastAPI Depends object
         assert hasattr(dep, "dependency")
         assert hasattr(dep, "use_cache")
-        assert dep.dependency == container.get_dependency_config(IService).provider  # type: ignore
+        # Dependency is now a wrapper
+        assert callable(dep.dependency)
+        assert inspect.iscoroutinefunction(dep.dependency)
         assert dep.use_cache is True
 
     def test_resolve_dependency_transient_uses_no_cache(self) -> None:
@@ -56,7 +58,9 @@ class TestResolveDependencyForParam:
 
         assert hasattr(dep, "dependency")
         assert hasattr(dep, "use_cache")
-        assert dep.dependency == container.get_dependency_config(IService).provider  # type: ignore
+        # Dependency is now a wrapper
+        assert callable(dep.dependency)
+        assert inspect.iscoroutinefunction(dep.dependency)
         assert dep.use_cache is False
 
     def test_resolve_dependency_singleton_uses_cache(self) -> None:
@@ -74,7 +78,8 @@ class TestResolveDependencyForParam:
 
         assert hasattr(dep, "dependency")
         assert hasattr(dep, "use_cache")
-        assert dep.use_cache is True
+        # Singleton uses internal caching/locking, so FastAPI cache is disabled
+        assert dep.use_cache is False
 
     def test_resolve_dependency_unregistered_returns_annotation(self) -> None:
         """Test that unregistered types return the annotation as-is."""
@@ -118,7 +123,8 @@ class TestAutowireCallable:
         assert svc_param.name == "svc"
         assert svc_param.default is not inspect.Parameter.empty
         assert hasattr(svc_param.default, "dependency")
-        assert svc_param.default.dependency == container.get_dependency_config(IService).provider  # type: ignore
+        # Dependency is now a wrapper
+        assert callable(svc_param.default.dependency)
 
     def test_autowire_preserves_self_parameter(self) -> None:
         """Test that autowire_callable doesn't modify the self parameter."""
@@ -368,10 +374,6 @@ class TestAutowireEdgeCases:
 
         assert unannotated_param.default is inspect.Parameter.empty
         assert annotated_param.default is not inspect.Parameter.empty
-
-
-class TestAutowireErrorHandling:
-    """Tests for error handling in autowiring."""
 
     def test_autowire_raises_error_for_implementation_injection(self) -> None:
         """Test that injecting an implementation instead of interface raises a helpful InterfaceMismatchError."""

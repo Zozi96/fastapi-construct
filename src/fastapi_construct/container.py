@@ -1,5 +1,8 @@
 import inspect
-from collections.abc import Callable
+import threading
+from collections.abc import Callable, Generator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from functools import lru_cache
 from typing import Any
 
@@ -34,8 +37,12 @@ class Container:
 
     def __init__(self):
         self._registry: dict[type, DependencyConfig] = {}
-        self._resolving: set[type] = set()
+        # Use frozenset as default to avoid shared mutable state issues
+        self._resolving_ctx: ContextVar[set[type]] = ContextVar("resolving", default=frozenset())
         self._singletons: dict[type, Any] = {}
+        self._lock = threading.Lock()
+        self._scope_ctx: ContextVar[dict[type, Any] | None] = ContextVar("scope_ctx", default=None)
+        self._initialized_services: set[int] = set()  # Track initialized instances by id
 
     def register[T](
         self,
@@ -73,7 +80,7 @@ class Container:
 
     def resolve[T](self, interface: type[T]) -> T:
         """
-        Resolves a dependency recursively.
+        Resolves a dependency recursively (Synchronous).
 
         Args:
             interface: The interface or type to resolve.
@@ -85,18 +92,75 @@ class Container:
             DependencyNotFoundError: If the dependency is not registered.
             CircularDependencyError: If a circular dependency is detected.
         """
-        if interface in self._resolving:
+        return self._resolve_impl(interface)
+
+    async def resolve_async[T](self, interface: type[T]) -> T:
+        """
+        Resolves a dependency recursively (Asynchronous).
+        Waits for on_startup hooks if present.
+
+        Args:
+            interface: The interface or type to resolve.
+
+        Returns:
+            The resolved instance.
+        """
+        instance = self._resolve_impl(interface)
+        await self._run_startup_hooks(instance)
+        return instance
+
+    def _resolve_impl[T](self, interface: type[T]) -> T:
+        resolving = self._resolving_ctx.get()
+        if interface in resolving:
             raise CircularDependencyError(f"Circular dependency detected for {interface}")
 
         config = self.get_config(interface)
         if not config:
             raise DependencyNotFoundError(f"No provider registered for {interface}")
 
-        # If it's a singleton and we already have an instance, return it
-        if config.lifetime == ServiceLifetime.SINGLETON and interface in self._singletons:
+        # Singleton Resolution (Thread-Safe)
+        if config.lifetime == ServiceLifetime.SINGLETON:
+            return self._resolve_singleton(config, interface)
+
+        # Scoped Resolution
+        if config.lifetime == ServiceLifetime.SCOPED:
+            return self._resolve_scoped(config, interface)
+
+        # Transient Resolution
+        return self._create_instance(config, interface)
+
+    def _resolve_singleton[T](self, config: DependencyConfig[T], interface: type[T]) -> T:
+        # Double-checked locking optimization
+        if interface in self._singletons:
             return self._singletons[interface]  # type: ignore
 
-        self._resolving.add(interface)
+        with self._lock:
+            if interface in self._singletons:
+                return self._singletons[interface]  # type: ignore
+
+            instance = self._create_instance(config, interface)
+            self._singletons[interface] = instance
+            return instance
+
+    def _resolve_scoped[T](self, config: DependencyConfig[T], interface: type[T]) -> T:
+        scope = self._scope_ctx.get()
+        if scope is not None:
+            if interface in scope:
+                return scope[interface]
+
+            instance = self._create_instance(config, interface)
+            scope[interface] = instance
+            return instance
+
+        # If no manual scope, fall back to creating a new instance (Transient-like behavior outside scope)
+        return self._create_instance(config, interface)
+
+    def _create_instance[T](self, config: DependencyConfig[T], interface: type[T]) -> T:
+        resolving = self._resolving_ctx.get()
+        new_resolving = set(resolving)
+        new_resolving.add(interface)
+        token = self._resolving_ctx.set(new_resolving)
+
         try:
             provider = config.provider
 
@@ -122,14 +186,42 @@ class Container:
                     kwargs[name] = param.default
                     continue
 
-            instance = provider(**kwargs)
-
-            if config.lifetime == ServiceLifetime.SINGLETON:
-                self._singletons[interface] = instance
-
-            return instance
+            return provider(**kwargs)
         finally:
-            self._resolving.remove(interface)
+            self._resolving_ctx.reset(token)
+
+    async def _run_startup_hooks(self, instance: Any) -> None:
+        """
+        Runs the on_startup hook if present and not already run.
+        """
+        if instance is None:
+            return
+
+        instance_id = id(instance)
+        if instance_id in self._initialized_services:
+            return
+
+        if hasattr(instance, "on_startup"):
+            startup_method = instance.on_startup
+            if callable(startup_method):
+                if inspect.iscoroutinefunction(startup_method):
+                    await startup_method()
+                else:
+                    startup_method()
+
+        self._initialized_services.add(instance_id)
+
+    @contextmanager
+    def scope(self) -> Generator[None, None, None]:
+        """
+        Context manager to create a manual scope for resolving SCOPED dependencies.
+        Useful for background tasks or scripts.
+        """
+        token = self._scope_ctx.set({})
+        try:
+            yield
+        finally:
+            self._scope_ctx.reset(token)
 
     def reset(self) -> None:
         """
@@ -137,8 +229,9 @@ class Container:
         Useful for testing.
         """
         self._registry.clear()
-        self._resolving.clear()
+        # self._resolving_ctx is context local, no need to reset
         self._singletons.clear()
+        self._initialized_services.clear()
 
     def get_singleton[T](self, interface: type[T]) -> T | None:
         """
@@ -150,7 +243,8 @@ class Container:
         """
         Register a singleton instance.
         """
-        self._singletons[interface] = instance
+        with self._lock:
+            self._singletons[interface] = instance
 
 
 # Global default container

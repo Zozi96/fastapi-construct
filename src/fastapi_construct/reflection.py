@@ -1,5 +1,6 @@
 import inspect
 from collections.abc import Callable
+from contextlib import suppress
 from typing import Any
 
 from fastapi import Depends
@@ -68,7 +69,9 @@ def autowire_callable[F: Callable[..., Any]](func: F, owner_lifetime: ServiceLif
                     new_params.append(param.replace(default=Depends(proxy, use_cache=False)))
                 else:
                     use_cache = config.lifetime != ServiceLifetime.TRANSIENT
-                    new_params.append(param.replace(default=Depends(config.provider, use_cache=use_cache)))
+                    # Wrap provider to support async initialization (on_startup)
+                    wrapper = _create_async_wrapper(config.provider)
+                    new_params.append(param.replace(default=Depends(wrapper, use_cache=use_cache)))
                 continue
 
             # Check if this type is registered under a different interface
@@ -133,25 +136,46 @@ def _create_singleton_proxy(provider: Callable[..., Any], interface: type[Any]) 
     It mimics the signature of the provider so FastAPI can inject dependencies into it.
     """
 
-    def proxy(**kwargs):
+    async def proxy(**kwargs):
+        # Fast check without lock
         instance = default_container.get_singleton(interface)
         if instance is not None:
             return instance
 
+        # Acquire lock and check again (Double-Checked Locking)
+        # We access the lock directly from the container to ensure process-wide safety
+        with default_container._lock:
+            instance = default_container.get_singleton(interface)
+            if instance is not None:
+                return instance
+
+            instance = provider(**kwargs)
+            await default_container._run_startup_hooks(instance)
+            default_container.set_singleton(interface, instance)
+            return instance
+
+    _copy_signature(provider, proxy)
+    return proxy
+
+
+def _create_async_wrapper(provider: Callable[..., Any]) -> Callable[..., Any]:
+    """
+    Creates a wrapper function to support async initialization (on_startup).
+    """
+
+    async def wrapper(**kwargs):
         instance = provider(**kwargs)
-        default_container.set_singleton(interface, instance)
+        await default_container._run_startup_hooks(instance)
         return instance
 
-    # Copy signature from provider
-    if inspect.isclass(provider):
-        init_sig = inspect.signature(provider.__init__)
-        # Remove self
-        params = [p for n, p in init_sig.parameters.items() if n != "self"]
-        proxy.__signature__ = init_sig.replace(parameters=params)  # type: ignore
-    else:
-        proxy.__signature__ = inspect.signature(provider)  # type: ignore
+    _copy_signature(provider, wrapper)
+    return wrapper
 
-    return proxy
+
+def _copy_signature(source: Callable, target: Callable) -> None:
+    """Helper to copy signature from source to target."""
+    with suppress(AttributeError):
+        target.__signature__ = inspect.signature(source)
 
 
 def resolve_dependency_for_param(annotation: Any) -> Any:
@@ -171,6 +195,11 @@ def resolve_dependency_for_param(annotation: Any) -> Any:
     """
     config = get_dependency_config(annotation)
     if config:
+        if config.lifetime == ServiceLifetime.SINGLETON:
+            proxy = _create_singleton_proxy(config.provider, annotation)
+            return Depends(proxy, use_cache=False)
+
         use_cache = config.lifetime != ServiceLifetime.TRANSIENT
-        return Depends(config.provider, use_cache=use_cache)
+        wrapper = _create_async_wrapper(config.provider)
+        return Depends(wrapper, use_cache=use_cache)
     return annotation
