@@ -161,12 +161,36 @@ def _create_singleton_proxy(provider: Callable[..., Any], interface: type[Any]) 
 def _create_async_wrapper(provider: Callable[..., Any]) -> Callable[..., Any]:
     """
     Creates a wrapper function to support async initialization (on_startup).
+    Handles AsyncGenerators by yielding the value and ensuring cleanup.
     """
+    if inspect.isasyncgenfunction(provider):
 
-    async def wrapper(**kwargs):
-        instance = provider(**kwargs)
-        await default_container._run_startup_hooks(instance)
-        return instance
+        async def wrapper(**kwargs):
+            gen = provider(**kwargs)
+            try:
+                instance = await anext(gen)
+                await default_container._run_startup_hooks(instance)
+                yield instance
+            finally:
+                try:
+                    await anext(gen)
+                except StopAsyncIteration:
+                    pass
+                except Exception:
+                    # If an error occurs during cleanup, we still want to ensure aclose is called
+                    # but we also want to propagate the error if appropriate.
+                    # FastAPI usually suppresses errors during cleanup or logs them?
+                    # For now let's just re-raise.
+                    raise
+                finally:
+                    await gen.aclose()
+
+    else:
+
+        async def wrapper(**kwargs):
+            instance = provider(**kwargs)
+            await default_container._run_startup_hooks(instance)
+            return instance
 
     _copy_signature(provider, wrapper)
     return wrapper
